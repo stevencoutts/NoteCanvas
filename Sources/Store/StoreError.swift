@@ -8,4 +8,5 @@ public enum StoreError: Error, Equatable {
     case noSuchSection
     case missingPage(UUID)
     case corruptPage(UUID)
+    case invalidAssetName
 }

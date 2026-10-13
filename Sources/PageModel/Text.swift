@@ -27,6 +27,8 @@ public enum Alignment: String, Codable, Sendable { case left, center, right }
 
 public struct Paragraph: Codable, Equatable, Sendable {
     public static let maxIndent = 8
+    /// Display scale per heading level (index 0 = body). Shared by the editor and the importer.
+    public static let headingScales: [Double] = [1, 1.8, 1.4, 1.2]
     public var runs: [Run]
     public var indent: Int
     public var heading: Int          // 0 = body, 1...3 = heading level

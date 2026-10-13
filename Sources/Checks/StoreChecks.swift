@@ -104,3 +104,51 @@ func storeChecks() {
     checkEqual(checkThrows("garbage manifest") { try NotebookPackage.open(at: garbage) } as? StoreError,
                .corruptManifest, "garbage manifest gives corruptManifest")
 }
+
+func assetAndSectionChecks() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var pkg = try! NotebookPackage.create(at: root.appendingPathComponent("A.notebook"), name: "A")
+
+    let name = try! pkg.addAsset(data: Data([1, 2, 3]), ext: "PNG")
+    check(name.hasSuffix(".png"), "asset keeps a sanitised extension")
+    checkEqual(pkg.loadAsset(name), Data([1, 2, 3]), "asset round-trips")
+    try! pkg.writeAsset(name: "fixed.jpg", data: Data([7]))
+    checkEqual(pkg.loadAsset("fixed.jpg"), Data([7]), "writeAsset stores under the given name")
+    checkEqual(pkg.loadAsset("../notebook.json"), nil, "a path escape is not an asset")
+    checkEqual(pkg.loadAsset("a/b.png"), nil, "a nested path is not an asset")
+    checkEqual(pkg.loadAsset(""), nil, "an empty name is not an asset")
+    checkEqual(pkg.loadAsset("missing.png"), nil, "a missing asset is nil")
+    check(checkThrows("writeAsset with a path") { try pkg.writeAsset(name: "../x.png", data: Data()) } != nil,
+          "writeAsset refuses a name that is not a plain file name")
+
+    let p1 = Page(id: UUID(), title: "One",
+                  objects: [.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: 10, height: 10), asset: name))])
+    let p2 = Page(id: UUID(), title: "Two", objects: [])
+    let report = Data(#"{"pagesImported":2}"#.utf8)
+    let section = try! pkg.addSection(name: "Imported", pages: [p1, p2], report: report)
+    checkEqual(pkg.notebook.sections.count, 2, "section added")
+    checkEqual(pkg.notebook.sections[1].name, "Imported", "section name kept")
+    checkEqual(pkg.notebook.sections[1].pages.map(\.title), ["One", "Two"], "page refs keep their order")
+    checkEqual(try! pkg.loadPage(p1.id), p1, "an imported page loads back identically")
+    checkEqual(try! NotebookPackage.open(at: pkg.url).notebook, pkg.notebook, "the manifest on disk matches memory")
+    check(FileManager.default.fileExists(atPath: pkg.url.appendingPathComponent("imports/\(section.id.uuidString).json").path),
+          "the import report is written")
+
+    let empty = try! pkg.addSection(name: "Empty", pages: [])
+    checkEqual(pkg.notebook.sections.last?.id, empty.id, "an empty section can be added")
+
+    // A failing page write must leave the manifest untouched (Review Focus 4).
+    if getuid() != 0 {
+        let pagesDir = pkg.url.appendingPathComponent("pages")
+        chmod(pagesDir.path, 0o500)
+        let before = pkg.notebook
+        check(checkThrows("addSection into a read-only pages folder") {
+            try pkg.addSection(name: "Bad", pages: [Page(id: UUID(), title: "x", objects: [])])
+        } != nil, "addSection reports the write failure")
+        chmod(pagesDir.path, 0o700)
+        checkEqual(pkg.notebook, before, "a failed addSection leaves the in-memory manifest unchanged")
+        checkEqual(try! NotebookPackage.open(at: pkg.url).notebook, before, "…and the manifest on disk")
+    }
+}

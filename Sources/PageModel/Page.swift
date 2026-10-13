@@ -1,14 +1,62 @@
 import Foundation
 
 public protocol TextMeasuring {
+    /// Height of a text container (the text plus the container's own chrome) at `width`.
     func height(of paragraphs: [Paragraph], width: Double) -> Double
+    /// Height of the text alone at `width`, without container chrome; used for table cells.
+    func textHeight(of paragraphs: [Paragraph], width: Double) -> Double
+}
+
+public extension TextMeasuring {
+    func textHeight(of paragraphs: [Paragraph], width: Double) -> Double { height(of: paragraphs, width: width) }
 }
 
 public enum PageObject: Codable, Equatable, Sendable {
     case text(TextContainer)
+    case image(ImageObject)
+    case table(TableObject)
+    case attachment(AttachmentObject)
 
     public var id: UUID {
-        switch self { case .text(let t): return t.id }
+        switch self {
+        case .text(let t): return t.id
+        case .image(let i): return i.id
+        case .table(let t): return t.id
+        case .attachment(let a): return a.id
+        }
+    }
+
+    public var frame: Frame {
+        get {
+            switch self {
+            case .text(let t): return t.frame
+            case .image(let i): return i.frame
+            case .table(let t): return t.frame
+            case .attachment(let a): return a.frame
+            }
+        }
+        set {
+            switch self {
+            case .text(var t): t.frame = newValue; self = .text(t)
+            case .image(var i): i.frame = newValue; self = .image(i)
+            case .table(var t): t.frame = newValue; self = .table(t)
+            case .attachment(var a): a.frame = newValue; self = .attachment(a)
+            }
+        }
+    }
+
+    /// A copy with a fresh id, moved by (dx, dy); used by paste.
+    public func duplicated(dx: Double, dy: Double) -> PageObject {
+        var copy: PageObject
+        switch self {
+        case .text(var t): t.id = UUID(); copy = .text(t)
+        case .image(var i): i.id = UUID(); copy = .image(i)
+        case .table(var t): t.id = UUID(); copy = .table(t)
+        case .attachment(var a): a.id = UUID(); copy = .attachment(a)
+        }
+        copy.frame.x += dx
+        copy.frame.y += dy
+        return copy
     }
 }
 
@@ -39,6 +87,11 @@ public struct Page: Codable, Equatable, Sendable {
         objects.insert(objects.remove(at: i), at: 0)
     }
 
+    public mutating func updateObject(_ id: UUID, _ body: (inout PageObject) -> Void) {
+        guard let i = index(of: id) else { return }
+        body(&objects[i])
+    }
+
     public mutating func updateText(_ id: UUID, _ body: (inout TextContainer) -> Void) {
         guard let i = index(of: id), case .text(var t) = objects[i] else { return }
         body(&t)
@@ -46,7 +99,7 @@ public struct Page: Codable, Equatable, Sendable {
     }
 
     public mutating func move(_ id: UUID, dx: Double, dy: Double) {
-        updateText(id) { $0.frame.x += dx; $0.frame.y += dy }
+        updateObject(id) { $0.frame.x += dx; $0.frame.y += dy }
     }
 
     public mutating func resize(_ id: UUID, width: Double) {
@@ -68,13 +121,21 @@ public struct Page: Codable, Equatable, Sendable {
         }
     }
 
-    /// Recomputes every container's derived height.
+    /// Recomputes every derived size: text container heights, table widths and heights.
     public mutating func relayout(using measurer: TextMeasuring) {
         for i in objects.indices {
-            guard case .text(var t) = objects[i] else { continue }
-            let h = measurer.height(of: t.paragraphs, width: t.frame.width)
-            t.frame.height = max(h, Page.minContainerHeight)
-            objects[i] = .text(t)
+            switch objects[i] {
+            case .text(var t):
+                let h = measurer.height(of: t.paragraphs, width: t.frame.width)
+                t.frame.height = max(h, Page.minContainerHeight)
+                objects[i] = .text(t)
+            case .table(var t):
+                t.frame.width = t.columnWidths.reduce(0, +)
+                t.frame.height = t.rowHeights(using: measurer).reduce(0, +)
+                objects[i] = .table(t)
+            case .image, .attachment:
+                break
+            }
         }
     }
 }

@@ -7,6 +7,13 @@ public struct NotebookPackage {
     public private(set) var notebook: Notebook
 
     private var manifestURL: URL { url.appendingPathComponent("notebook.json") }
+
+    private var assetsURL: URL { url.appendingPathComponent("assets", isDirectory: true) }
+    private var importsURL: URL { url.appendingPathComponent("imports", isDirectory: true) }
+
+    private static func isPlainFileName(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\0")
+    }
     private func pageURL(_ id: UUID) -> URL {
         url.appendingPathComponent("pages", isDirectory: true).appendingPathComponent("\(id.uuidString).json")
     }
@@ -99,5 +106,40 @@ public struct NotebookPackage {
         var trashed: NSURL?
         guard (try? FileManager.default.trashItem(at: pageURL(id), resultingItemURL: &trashed)) != nil else { return nil }
         return trashed as URL?
+    }
+
+    /// Stores `data` under a fresh `assets/<uuid>.<ext>` name and returns that name.
+    public func addAsset(data: Data, ext: String) throws -> String {
+        let name = AssetName.make(ext: ext)
+        try writeAsset(name: name, data: data)
+        return name
+    }
+
+    /// Stores `data` as `assets/<name>` (atomic). `name` must be a plain file name.
+    public func writeAsset(name: String, data: Data) throws {
+        guard Self.isPlainFileName(name) else { throw StoreError.invalidAssetName }
+        try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
+        try data.write(to: assetsURL.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// The asset's data, or nil when the name is not a plain file name or the file is missing.
+    public func loadAsset(_ name: String) -> Data? {
+        guard Self.isPlainFileName(name) else { return nil }
+        return try? Data(contentsOf: assetsURL.appendingPathComponent(name))
+    }
+
+    /// Adds a section holding `pages`. Assets must already be stored. Order: page files, then the optional
+    /// report, then the manifest entry last, so a failure leaves at most orphan files, never a dangling section.
+    public mutating func addSection(name: String, pages: [Page], report: Data? = nil) throws -> Section {
+        let section = Section(id: UUID(), name: name, pages: pages.map { PageRef(id: $0.id, title: $0.title) })
+        for page in pages { try write(page) }
+        if let report {
+            try FileManager.default.createDirectory(at: importsURL, withIntermediateDirectories: true)
+            try report.write(to: importsURL.appendingPathComponent("\(section.id.uuidString).json"), options: .atomic)
+        }
+        var updated = notebook
+        updated.sections.append(section)
+        try commitManifest(updated)
+        return section
     }
 }

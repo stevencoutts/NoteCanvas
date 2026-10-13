@@ -26,7 +26,7 @@ public struct BodySelection: Equatable {
 /// Converts between the model's paragraphs/runs and the attributed text shown in an NSTextView.
 public enum AttributedBridge {
     public static let baseSize: CGFloat = 14
-    static let headingScale: [CGFloat] = [1, 1.8, 1.4, 1.2]
+    static let headingScale: [CGFloat] = Paragraph.headingScales.map { CGFloat($0) }
     static let indentStep: CGFloat = 24
     static let listGap: CGFloat = 18
 

@@ -138,4 +138,60 @@ func modelChecks() {
     textTypeChecks()
     pageOpChecks()
     historyChecks()
+    objectChecks()
+}
+
+func objectChecks() {
+    let img = ImageObject(id: UUID(), frame: Frame(x: 5, y: 6, width: 100, height: 50), asset: "a.png", altText: "alt")
+    let cellP = [Paragraph(runs: [Run(text: "cell", style: RunStyle())])]
+    let tbl = TableObject(id: UUID(), frame: Frame(x: 1, y: 2, width: 0, height: 0), columnWidths: [100, 50],
+                          rows: [[TableCell(paragraphs: cellP), TableCell(paragraphs: [])],
+                                 [TableCell(paragraphs: cellP), TableCell(paragraphs: cellP)]],
+                          bordersVisible: true)
+    let att = AttachmentObject(id: UUID(), frame: Frame(x: 9, y: 9, width: 60, height: 60), asset: "b.pdf", displayName: "Doc.pdf")
+    let txt = box(0, 0, 100)
+    var page = Page(id: UUID(), title: "t", objects: [.image(img), .table(tbl), .attachment(att), .text(txt)])
+
+    let back = try! JSONDecoder().decode(Page.self, from: JSONEncoder().encode(page))
+    checkEqual(back, page, "a page with every object kind round-trips through JSON")
+
+    page.move(img.id, dx: 10, dy: -5)
+    page.move(tbl.id, dx: 1, dy: 1)
+    page.move(att.id, dx: -9, dy: -9)
+    checkEqual(page.objects[0].frame, Frame(x: 15, y: 1, width: 100, height: 50), "move works on images")
+    checkEqual(page.objects[1].frame.x, 2, "move works on tables")
+    checkEqual(page.objects[2].frame, Frame(x: 0, y: 0, width: 60, height: 60), "move works on attachments")
+
+    page.bringToFront(img.id)
+    checkEqual(page.objects.last?.id, img.id, "bringToFront works on images")
+    page.sendToBack(img.id)
+    checkEqual(page.objects.first?.id, img.id, "sendToBack works on images")
+
+    let beforeResize = page
+    page.resize(img.id, width: 500)
+    checkEqual(page, beforeResize, "resize still applies to text containers only")
+
+    // Table height and width are derived: FixedLineMeasurer gives 20 per paragraph, padding is 4 each side.
+    checkEqual(tbl.rowHeights(using: FixedLineMeasurer()), [28, 28], "row height = max(minimum, tallest cell + padding)")
+    page.relayout(using: FixedLineMeasurer())
+    guard case .table(let laid)? = page.objects.first(where: { $0.id == tbl.id }) else { check(false, "table present"); return }
+    checkEqual(laid.frame.width, 150, "table width is the sum of its column widths")
+    checkEqual(laid.frame.height, 56, "table height is the sum of its row heights")
+    guard case .image(let untouched)? = page.objects.first(where: { $0.id == img.id }) else { return }
+    checkEqual(untouched.frame.height, 50, "relayout leaves image height alone")
+
+    let dup = PageObject.image(img).duplicated(dx: 20, dy: 30)
+    check(dup.id != img.id, "duplicate has a fresh id")
+    checkEqual(dup.frame.x, 25, "duplicate is offset in x")
+    checkEqual(dup.frame.y, 36, "duplicate is offset in y")
+
+    let n1 = AssetName.make(ext: "PNG"), n2 = AssetName.make(ext: "../x")
+    check(n1.hasSuffix(".png"), "extension is lower-cased: \(n1)")
+    check(n2.hasSuffix(".x"), "path characters are stripped from the extension: \(n2)")
+    check(AssetName.make(ext: "").hasSuffix(".bin"), "empty extension becomes bin")
+    check(AssetName.make(ext: "!!!").hasSuffix(".bin"), "an extension with no letters or digits becomes bin")
+    check(AssetName.make(ext: "abcdefghijkl").hasSuffix(".abcdefgh"), "extension is capped at 8 characters")
+    check(n1 != AssetName.make(ext: "PNG"), "names are unique")
+
+    checkEqual(Paragraph.headingScales, [1, 1.8, 1.4, 1.2], "heading scales live in PageModel")
 }
