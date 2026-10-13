@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .target(name: "PageModel"),
         .target(name: "Store", dependencies: ["PageModel"]),
-        .executableTarget(name: "Checks", dependencies: ["PageModel", "Store"]),
+        .target(name: "CanvasKit", dependencies: ["PageModel", "Store"]),
+        .executableTarget(name: "Checks", dependencies: ["PageModel", "Store", "CanvasKit"]),
     ],
     swiftLanguageModes: [.v5]
 )
