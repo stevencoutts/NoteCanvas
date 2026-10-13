@@ -61,4 +61,17 @@ func bridgeChecks() {
     let uniBack = AttributedBridge.paragraphs(from: AttributedBridge.attributed(from: [Paragraph(runs: [run(uni)])]))
     checkEqual(Array(uniBack.map { $0.runs.map(\.text).joined() }.joined().unicodeScalars), Array(uni.unicodeScalars),
                "unicode scalars survive the round trip")
+
+    // Measurer.
+    let m = TextKitMeasurer()
+    let long = [Paragraph(runs: [run(String(repeating: "word ", count: 60))])]
+    let narrowH = m.height(of: long, width: 120)
+    let wideH = m.height(of: long, width: 600)
+    check(narrowH > wideH * 2, "narrow container wraps to a much greater height (\(narrowH) vs \(wideH))")
+    let single = [Paragraph(runs: [run("one line")])]
+    let twoLines = [Paragraph(runs: [run("a")]), Paragraph(runs: [run("b")])]
+    check(m.height(of: twoLines, width: 300) > m.height(of: single, width: 300), "more paragraphs are taller")
+    check(m.height(of: [], width: 300) >= 0, "empty content measures without crashing")
+    let tall = [Paragraph(runs: [run("Title", { $0.fontSize = 14 })], heading: 1)]
+    check(m.height(of: tall, width: 300) > m.height(of: single, width: 300), "headings are taller than body text")
 }
