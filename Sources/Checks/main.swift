@@ -15,6 +15,7 @@ corpusChecks()
 oneImportTextChecks()
 oneImportLayoutChecks()
 oneImportStyleLossChecks()
+oneImportHostileLayoutChecks()
 corpusImportChecks()
 
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")

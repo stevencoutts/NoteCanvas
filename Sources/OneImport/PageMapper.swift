@@ -23,6 +23,7 @@ final class PageMapper {
     static let indentStep = 24.0
     static let attachmentSize = (width: 120.0, height: 60.0)
     static let maxDepth = 64
+    static let maxLayoutUnits: Float = 10_000
 
     let graph: ObjectGraph
     let measurer: TextMeasuring
@@ -36,6 +37,13 @@ final class PageMapper {
         self.paragraphs = ParagraphMapper(graph: graph)
     }
 
+    /// A layout float from the file (half-inch units) when it is finite and sane; otherwise nil, counted as invalid.
+    private func layoutValue(_ f: Float?) -> Double? {
+        guard let f else { return nil }
+        guard f.isFinite, abs(f) <= Self.maxLayoutUnits else { report.approximated("invalidLayoutValue"); return nil }
+        return Double(f)
+    }
+
     func mapPage(_ page: OneObject) -> Page {
         report.noteIgnoredProperties(of: page, consumed: PID.consumedByPage)
         var title = ""
@@ -47,8 +55,8 @@ final class PageMapper {
             case .outline:
                 objects += mapOutline(child)
             case .image, .table, .embeddedFile:
-                let x = Double(child.properties.float(PID.offsetH) ?? 0) * Self.unit
-                let y = Double(child.properties.float(PID.offsetV) ?? 0) * Self.unit
+                let x = (layoutValue(child.properties.float(PID.offsetH)) ?? 0) * Self.unit
+                let y = (layoutValue(child.properties.float(PID.offsetV)) ?? 0) * Self.unit
                 if let object = mapBlock(child, x: x, y: y) { objects.append(object) }
             default:
                 report.skipped(child.jcid)
@@ -65,6 +73,7 @@ final class PageMapper {
     private func mapTitle(_ title: OneObject) -> String {
         var scratch = ImportReport()
         var lines: [String] = []
+        let titleParagraphs = ParagraphMapper(graph: graph)    // its own style ledger, so body text still counts shared styles
         for outline in graph.children(of: title, PID.elementChildren, report: &scratch) where outline.jcid == .outline {
             for element in graph.children(of: outline, PID.elementChildren, report: &scratch) {
                 for content in graph.children(of: element, PID.contentChildren, report: &scratch) where content.jcid == .richText {
@@ -72,7 +81,7 @@ final class PageMapper {
                         report.approximated("titleDateDropped")
                         continue
                     }
-                    let p = paragraphs.paragraph(richText: content, indent: 0, list: .none, report: &scratch)
+                    let p = titleParagraphs.paragraph(richText: content, indent: 0, list: .none, report: &scratch)
                     let text = p.runs.map(\.text).joined()
                     if !text.isEmpty { lines.append(text) }
                 }
@@ -87,10 +96,12 @@ final class PageMapper {
     private func mapOutline(_ outline: OneObject) -> [PageObject] {
         report.noteIgnoredProperties(of: outline, consumed: PID.consumedByOutline)
         let p = outline.properties
-        if p.float(PID.offsetH) == nil || p.float(PID.offsetV) == nil { report.approximated("outlineWithoutPosition") }
-        let x = Double(p.float(PID.offsetH) ?? 0) * Self.unit
-        var y = Double(p.float(PID.offsetV) ?? 0) * Self.unit
-        let width = (p.float(PID.maxWidth) ?? p.float(PID.reservedWidth)).map { Double($0) * Self.unit } ?? Self.defaultOutlineWidth
+        let ox = layoutValue(p.float(PID.offsetH)), oy = layoutValue(p.float(PID.offsetV))
+        if ox == nil || oy == nil { report.approximated("outlineWithoutPosition") }
+        let x = (ox ?? 0) * Self.unit
+        var y = (oy ?? 0) * Self.unit
+        var width = (layoutValue(p.float(PID.maxWidth)) ?? layoutValue(p.float(PID.reservedWidth))).map { $0 * Self.unit } ?? Self.defaultOutlineWidth
+        if width <= 0 { width = Self.defaultOutlineWidth }
         var out: [PageObject] = []
         var pending: [Paragraph] = []
         var visited = Set<ExtendedGUID>()
@@ -171,9 +182,9 @@ final class PageMapper {
             report.approximated("imageDataMissing")
             return nil
         }
-        var width = p.float(PID.maxWidth).map { Double($0) * Self.unit } ?? 100
+        var width = layoutValue(p.float(PID.maxWidth)).map { $0 * Self.unit } ?? 100
         if width <= 0 { width = 100 }
-        var height = p.float(PID.maxHeight).map { Double($0) * Self.unit } ?? width
+        var height = layoutValue(p.float(PID.maxHeight)).map { $0 * Self.unit } ?? width
         if height <= 0 { height = width }
         let name = sink.add(object: container.id, data: file.data, ext: file.ext)
         let alt = p.string(PID.imageAltText).flatMap { $0.isEmpty ? nil : $0 }
@@ -195,7 +206,7 @@ final class PageMapper {
         }
         let columns = rows.map(\.count).max() ?? 0
         guard columns > 0 else { report.approximated("emptyTableSkipped"); return nil }
-        var widths = Self.columnWidths(node.properties.data(PID.tableColumnWidths))
+        var widths = columnWidths(node.properties.data(PID.tableColumnWidths))
         if widths.count != columns {
             report.approximated("tableColumnWidthsAdjusted")
             widths = Array(widths.prefix(columns)) + [Double](repeating: 100, count: max(0, columns - widths.count))
@@ -209,12 +220,12 @@ final class PageMapper {
     }
 
     /// TableColumnWidths: one byte with the column count, then that many 4-byte floats (half-inch units).
-    private static func columnWidths(_ data: Data?) -> [Double] {
+    private func columnWidths(_ data: Data?) -> [Double] {
         guard let d = data, let count = d.first.map(Int.init), d.count >= 1 + 4 * count else { return [] }
         return (0..<count).map { i in
             let b = d.startIndex + 1 + 4 * i
             let bits = UInt32(d[b]) | UInt32(d[b + 1]) << 8 | UInt32(d[b + 2]) << 16 | UInt32(d[b + 3]) << 24
-            return max(Double(Float(bitPattern: bits)) * unit, 1)
+            return max((layoutValue(Float(bitPattern: bits)) ?? 100 / Self.unit) * Self.unit, 1)
         }
     }
 

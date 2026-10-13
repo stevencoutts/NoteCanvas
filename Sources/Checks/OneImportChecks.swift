@@ -567,3 +567,56 @@ func oneImportStyleLossChecks() {
     let r2 = mapPageForTest(g2, page: pg2)
     checkEqual(r2.report.ignoredProperties.count, 0, "unread properties noted while mapping the title do not reach the report")
 }
+
+func oneImportHostileLayoutChecks() {
+    func inRange(_ f: Frame) -> Bool {
+        [f.x, f.y, f.width, f.height].allSatisfy { $0.isFinite && abs($0) <= 1_000_000 }
+    }
+    for bad in [Float.nan, .infinity, -.infinity, 1e30] {
+        var g = Gx()
+        // outline with hostile position and width
+        let t = richText(&g, "x")
+        let el = element(&g, content: [t])
+        let o = outline(&g, x: bad, y: bad, width: bad, reserved: bad, elements: [el])
+        // inline image with hostile size and position
+        let pic = pictureContainer(&g)
+        let img = imageNode(&g, container: pic, width: bad, height: bad, x: bad, y: bad)
+        // table with hostile column widths and offsets
+        let cell = g.add(.tableCell, [])
+        let row = g.add(.tableRow, [P(PID.elementChildren, .objectIDs([cell, cell]))])
+        let tbl = g.add(.table, [P(PID.elementChildren, .objectIDs([row])),
+                                 P(PID.tableColumnWidths, columnWidths([bad, bad])),
+                                 P(PID.offsetH, floatValue(bad)), P(PID.offsetV, floatValue(bad))])
+        // attachment with hostile offsets
+        let file = g.add(JCID(0x0008_0036), [], fileData: FileDataReference(target: "<ifndf>{DDDDDDDD-1111-2222-3333-444444444444}", extensionText: ".pdf"))
+        let att = g.add(.embeddedFile, [P(PID.embeddedFileContainer, .objectIDs([file])), P(PID.embeddedFileName, wz("A.pdf")),
+                                        P(PID.offsetH, floatValue(bad)), P(PID.offsetV, floatValue(bad))])
+        let pg = pageNode(&g, [o, img, tbl, att])
+        let r = mapPageForTest(g, page: pg, files: [pic: Data([1]), file: Data([2])])
+        let label = "(\(bad))"
+        checkEqual(r.page.objects.count, 4, "hostile layout floats never drop objects \(label)")
+        check(r.page.objects.allSatisfy { inRange($0.frame) }, "every frame is finite and in range \(label)")
+        check((r.report.approximations["invalidLayoutValue"] ?? 0) >= 4, "invalid layout values are counted \(label)")
+        if case .text(let box) = r.page.objects[0] {
+            checkEqual(box.frame.width, 432, "an outline with an invalid width falls back to 432 \(label)")
+            checkEqual(box.frame.x, 0, "an invalid offset falls back to 0 \(label)")
+        } else { check(false, "first object is text \(label)") }
+        if case .image(let i) = r.page.objects[1] { checkEqual(i.frame.width, 100, "an invalid image size falls back to 100 \(label)") }
+        if case .table(let t) = r.page.objects[2] { checkEqual(t.columnWidths, [100, 100], "invalid column widths fall back to 100 \(label)") }
+        check((try? JSONEncoder().encode(r.page)) != nil, "the page encodes as JSON \(label)")
+    }
+
+    // A style object shared by the title and the body is counted once, in the real report.
+    var g = Gx()
+    let style = g.add(.paragraphStyle, [P(PID.bold, .bool(true)), P(0x1400CCCC, .u32(1))])
+    let title = richText(&g, "T", extra: [P(PID.isTitleText, .bool(true)), P(PID.paragraphStyle, .objectIDs([style]))])
+    let te = element(&g, content: [title])
+    let to = outline(&g, x: nil, y: nil, elements: [te])
+    let tn = g.add(.title, [P(PID.elementChildren, .objectIDs([to]))])
+    let body = richText(&g, "b", extra: [P(PID.paragraphStyle, .objectIDs([style]))])
+    let be = element(&g, content: [body])
+    let bo = outline(&g, x: 0, y: 0, width: 4, elements: [be])
+    let pg = pageNode(&g, [tn, bo])
+    let r = mapPageForTest(g, page: pg)
+    checkEqual(r.report.ignoredProperties["0x1400cccc"], 1, "a style shared by title and body is counted once")
+}
