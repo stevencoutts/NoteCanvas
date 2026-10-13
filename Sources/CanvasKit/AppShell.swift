@@ -2,11 +2,15 @@ import AppKit
 import PageModel
 import Store
 
-public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
+public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var package: NotebookPackage?
     private var controller: PageController?
     private var pages: [PageRef] = []
+    private var lastSaveError: Error?
+    private var saveFailureReported = false     // one alert per run of failed saves; a successful save resets it
+    private var isFlushing = false              // flush callers explain a failure themselves
+    private var revertingSelection = false
 
     private let table = NSTableView()
     private let canvasScroll = NSScrollView()
@@ -26,7 +30,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         promptForNotebook()
     }
 
-    public func applicationWillTerminate(_ notification: Notification) { controller?.flush() }
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        saveOrDiscard("Quit") ? .terminateNow : .terminateCancel
+    }
+    public func windowShouldClose(_ sender: NSWindow) -> Bool { saveOrDiscard("Close") }
+    public func applicationWillTerminate(_ notification: Notification) { commitEditing(); _ = flushController() }
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     // MARK: notebook open / create
@@ -48,9 +56,20 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "Untitled.notebook"
         guard panel.runModal() == .OK, let url = panel.url else { if package == nil { promptForNotebook() }; return }
+        let fm = FileManager.default
+        // NSSavePanel already asked about replacing, but only ever replace a notebook, never an arbitrary folder or file.
+        if fm.fileExists(atPath: url.path), !fm.fileExists(atPath: url.appendingPathComponent("notebook.json").path) {
+            inform("“\(url.lastPathComponent)” is not a notebook",
+                   "NoteCanvas only replaces an existing notebook. Choose another name or location.")
+            if package == nil { promptForNotebook() }
+            return
+        }
+        // Save and close the open page first, so no pending write can land in the folder being replaced.
+        guard saveOrDiscard("Continue") else { return }
+        if let open = package, open.url.standardizedFileURL == url.standardizedFileURL { closeNotebook() }
         do {
-            // NSSavePanel already asked about replacing; the store itself refuses to clobber, so clear first.
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+            // The store itself refuses to clobber, so clear first.
+            if fm.fileExists(atPath: url.path) { try fm.trashItem(at: url, resultingItemURL: nil) }
             var pkg = try NotebookPackage.create(at: url, name: url.deletingPathExtension().lastPathComponent)
             _ = try pkg.addPage(title: "Untitled Page")
             use(pkg)
@@ -62,14 +81,26 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         guard panel.runModal() == .OK, let url = panel.url else { if package == nil { promptForNotebook() }; return }
-        do { use(try NotebookPackage.open(at: url)) } catch { show(error); if package == nil { promptForNotebook() } }
+        do {
+            let pkg = try NotebookPackage.open(at: url)
+            guard saveOrDiscard("Continue") else { return }
+            use(pkg)
+        } catch { show(error); if package == nil { promptForNotebook() } }
+    }
+
+    private func closeNotebook() {
+        dropPage()
+        package = nil
+        table.deselectAll(nil)
+        reloadPages()
+        window.title = "NoteCanvas"
     }
 
     private func use(_ pkg: NotebookPackage) {
-        controller?.flush()
+        commitEditing()
+        _ = flushController()
         // Drop the old page's controller/view and selection so the selection change below always fires and loads once.
-        controller = nil
-        canvasScroll.documentView = nil
+        dropPage()
         table.deselectAll(nil)
         package = pkg
         window.title = pkg.notebook.name
@@ -86,12 +117,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
     }
 
     private func showPage(_ id: UUID) {
-        controller?.flush()
+        guard !revertingSelection, controller?.page.id != id else { return }
+        commitEditing()
+        if let current = controller, !flushController() {
+            // Keep the unsaved page on screen (and its row selected) rather than dropping its edits.
+            if let row = pages.firstIndex(where: { $0.id == current.page.id }) {
+                revertingSelection = true
+                table.selectRowIndexes([row], byExtendingSelection: false)
+                revertingSelection = false
+            }
+            inform("This page could not be saved", "\(describe(lastSaveError))\n\nIt stays open so your changes are not lost. "
+                   + "Fix the problem (for example, move the notebook back or free some disk space) and try again.")
+            return
+        }
+        dropPage()                                   // a failed load must not leave the previous page on screen
         guard let pkg = package else { return }
         do {
             let page = try pkg.loadPage(id)
             let c = PageController(page: page)
-            c.onPersist = { [weak self] page in self?.save(page) }
+            c.onPersist = { [weak self] page in self?.save(page) ?? false }
             controller = c
             canvasScroll.documentView = c.view
             c.view.frame.size = canvasScroll.contentSize
@@ -99,15 +143,68 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         } catch { show(error) }
     }
 
-    private func save(_ page: Page) {
+    private func dropPage() {
+        controller = nil
+        canvasScroll.documentView = nil
+        titleField.stringValue = ""
+    }
+
+    /// Ends text or title editing so the change reaches the controller before anything is flushed or replaced.
+    private func commitEditing() {
+        guard let window else { return }
+        if !window.makeFirstResponder(nil) { window.endEditing(for: nil) }
+    }
+
+    private func flushController() -> Bool {
+        guard let c = controller else { return true }
+        isFlushing = true
+        defer { isFlushing = false }
+        return c.flush()
+    }
+
+    /// Saves the open page before it goes away. If that fails the user chooses: cancel (keep the edits on screen)
+    /// or go ahead and lose them. Returns true when it is safe to proceed.
+    private func saveOrDiscard(_ verb: String) -> Bool {
+        commitEditing()
+        if flushController() { return true }
+        let a = NSAlert()
+        a.alertStyle = .critical
+        a.messageText = "This page could not be saved"
+        a.informativeText = "\(describe(lastSaveError))\n\nIf you continue, your recent changes to this page will be lost."
+        a.addButton(withTitle: "Cancel")
+        a.addButton(withTitle: "\(verb) and Lose Changes").hasDestructiveAction = true
+        guard a.runModal() == .alertSecondButtonReturn else { return false }
+        dropPage()
+        return true
+    }
+
+    private func save(_ page: Page) -> Bool {
         do {
             try package?.savePage(page)
+            lastSaveError = nil
+            saveFailureReported = false
             window.title = package?.notebook.name ?? ""
             if let i = pages.firstIndex(where: { $0.id == page.id }), pages[i].title != page.title {
                 pages[i].title = page.title
                 table.reloadData(forRowIndexes: [i], columnIndexes: [0])
             }
-        } catch { window.title = "⚠︎ SAVE FAILED: \(error)" }
+            return true
+        } catch {
+            lastSaveError = error
+            window.title = "⚠︎ SAVE FAILED: \(error)"
+            if !isFlushing && !saveFailureReported {
+                saveFailureReported = true
+                inform("NoteCanvas could not save this page", "\(error)\n\nYour changes stay on screen and NoteCanvas keeps "
+                       + "trying to save. Until a save succeeds, further failures are shown only in the window title.")
+            }
+            return false
+        }
+    }
+
+    private func describe(_ error: Error?) -> String { error.map { "\($0)" } ?? "Unknown error." }
+
+    private func inform(_ message: String, _ info: String) {
+        let a = NSAlert(); a.alertStyle = .warning; a.messageText = message; a.informativeText = info; a.runModal()
     }
 
     private func show(_ error: Error) {
@@ -130,6 +227,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
     }
 
     @objc func addPage(_ sender: Any?) {
+        commitEditing()
         guard var pkg = package else { return }
         do { _ = try pkg.addPage(title: "Untitled Page"); package = pkg; reloadPages()
              table.selectRowIndexes([pages.count - 1], byExtendingSelection: false)
@@ -137,15 +235,22 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
     }
 
     @objc func removePage(_ sender: Any?) {
+        commitEditing()
         guard var pkg = package, pages.indices.contains(table.selectedRow) else { return }
-        let id = pages[table.selectedRow].id
-        controller = nil
-        canvasScroll.documentView = nil
-        titleField.stringValue = ""
+        let ref = pages[table.selectedRow]
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Delete “\(controller?.page.id == ref.id ? controller!.page.title : ref.title)”?"
+        a.informativeText = "The page will be moved to the Trash."
+        a.addButton(withTitle: "Cancel")                 // first button: the default, so Return does not delete
+        a.addButton(withTitle: "Delete").hasDestructiveAction = true
+        guard a.runModal() == .alertSecondButtonReturn else { return }
+        do { try pkg.deletePage(id: ref.id) } catch { show(error); return }
+        package = pkg
+        if controller?.page.id == ref.id { dropPage() }   // no flush: the page is gone
         table.deselectAll(nil)
-        do { try pkg.deletePage(id: id); package = pkg; reloadPages()
-             if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) } else { canvasScroll.documentView = nil }
-        } catch { show(error) }
+        reloadPages()
+        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) { controller?.setTitle(titleField.stringValue) }
@@ -157,7 +262,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
     @objc func underline(_ s: Any?) { controller?.applyRun(.underline) }
     @objc func strike(_ s: Any?) { controller?.applyRun(.strike) }
     @objc func pickSize(_ s: Any?) { if let v = Double(sizePopup.titleOfSelectedItem ?? "") { controller?.applyRun(.size(v)) } }
-    @objc func pickColor(_ s: Any?) { controller?.applyRun(.color(colorWell.color)) }
+    /// Converted to sRGB so a picked system swatch is never a catalog colour (the bridge ignores those as "default").
+    @objc func pickColor(_ s: Any?) { controller?.applyRun(.color(colorWell.color.usingColorSpace(.sRGB) ?? colorWell.color)) }
     @objc func pickHeading(_ s: Any?) { let h = headingPopup.indexOfSelectedItem; controller?.applyParagraph { $0.heading = h } }
     @objc func bullet(_ s: Any?) { controller?.applyParagraph { $0.list = ($0.list == .bullet ? .none : .bullet) } }
     @objc func numbered(_ s: Any?) { controller?.applyParagraph { $0.list = ($0.list == .numbered ? .none : .numbered) } }
@@ -208,6 +314,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "NoteCanvas"
+        window.isReleasedWhenClosed = false          // the shell owns the window; closing it must not free it
+        window.delegate = self
         window.center()
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("title"))
@@ -268,10 +376,12 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
 
     private func buildMenu() {
         let main = NSMenu()
-        func item(_ title: String, _ action: Selector?, _ key: String = "", mods: NSEvent.ModifierFlags = .command, in menu: NSMenu) {
+        /// `firstResponder` items have no target, so the focused view (e.g. a text view) handles them.
+        func item(_ title: String, _ action: Selector?, _ key: String = "", mods: NSEvent.ModifierFlags = .command,
+                  firstResponder: Bool = false, in menu: NSMenu) {
             let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
             i.keyEquivalentModifierMask = mods
-            if action != nil, action != #selector(NSApplication.terminate(_:)) { i.target = self }
+            if action != nil, action != #selector(NSApplication.terminate(_:)), !firstResponder { i.target = self }
             menu.addItem(i)
         }
         func submenu(_ title: String) -> NSMenu {
@@ -288,8 +398,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         item("Undo", #selector(undoAction(_:)), "z", in: edit)
         item("Redo", #selector(redoAction(_:)), "z", mods: [.command, .shift], in: edit)
         edit.addItem(.separator())
+        item("Cut", #selector(NSText.cut(_:)), "x", firstResponder: true, in: edit)
         item("Copy", #selector(copyAction(_:)), "c", in: edit)
         item("Paste", #selector(pasteAction(_:)), "v", in: edit)
+        item("Select All", #selector(NSText.selectAll(_:)), "a", firstResponder: true, in: edit)
         item("Delete Object", #selector(deleteObject(_:)), "\u{7f}", mods: [], in: edit)
         let arrange = submenu("Arrange")
         item("Bring to Front", #selector(bringToFront(_:)), "]", in: arrange)

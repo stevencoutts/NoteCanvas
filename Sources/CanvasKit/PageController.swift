@@ -3,7 +3,8 @@ import PageModel
 
 public final class PageController {
     public private(set) var page: Page
-    public var onPersist: ((Page) -> Void)?
+    /// Writes the page; returns false when the write failed.
+    public var onPersist: ((Page) -> Bool)?
     public var view: NSView { pageView }
     public var hasSelectedObject: Bool { selected != nil }
 
@@ -57,17 +58,18 @@ public final class PageController {
         persistWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.onPersist?(self.page)
+            _ = self.onPersist?(self.page)
         }
         persistWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    /// Write immediately (page switch, quit).
-    public func flush() {
+    /// Write immediately (page switch, quit). Returns false when the write failed.
+    @discardableResult
+    public func flush() -> Bool {
         persistWork?.cancel()
         persistWork = nil
-        onPersist?(page)
+        return onPersist?(page) ?? true
     }
 
     /// Applies an undoable change and re-renders every container's text.
