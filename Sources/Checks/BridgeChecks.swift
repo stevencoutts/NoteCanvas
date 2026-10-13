@@ -71,7 +71,11 @@ func bridgeChecks() {
     let single = [Paragraph(runs: [run("one line")])]
     let twoLines = [Paragraph(runs: [run("a")]), Paragraph(runs: [run("b")])]
     check(m.height(of: twoLines, width: 300) > m.height(of: single, width: 300), "more paragraphs are taller")
-    check(m.height(of: [], width: 300) >= 0, "empty content measures without crashing")
+    // Literal bound: handleHeight 14 + 2*inset 12 + a ~13pt base line (Metrics is internal to CanvasKit).
+    check(m.height(of: [], width: 300) >= 14 + 12 + 13, "empty container has room for one line (\(m.height(of: [], width: 300)))")
+    let oneA = [Paragraph(runs: [run("a")])]
+    let aThenEmpty = [Paragraph(runs: [run("a")]), Paragraph(runs: [])]
+    check(m.height(of: aThenEmpty, width: 300) > m.height(of: oneA, width: 300), "trailing empty paragraph adds height")
     let tall = [Paragraph(runs: [run("Title", { $0.fontSize = 14 })], heading: 1)]
     check(m.height(of: tall, width: 300) > m.height(of: single, width: 300), "headings are taller than body text")
 }

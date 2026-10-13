@@ -24,7 +24,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
     let id: UUID
     let handle = DragStrip()
     let grip = DragStrip()
-    let textView = NSTextView()
+    let textView = NSTextView(usingTextLayoutManager: false)   // TextKit 1, matches TextKitMeasurer
 
     var onDragBegin: (() -> Void)?
     var onMove: ((Double, Double) -> Void)?
@@ -74,6 +74,8 @@ final class ContainerView: NSView, NSTextViewDelegate {
                                 width: max(w - Metrics.inset - Metrics.gripWidth, 1),
                                 height: max(h - Metrics.handleHeight - Metrics.inset * 2, 1))
     }
+
+    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(textView) }
 
     override func draw(_ dirtyRect: NSRect) {
         if isSelectedObject || isEditing {

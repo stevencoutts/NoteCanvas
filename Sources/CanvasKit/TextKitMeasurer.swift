@@ -19,7 +19,10 @@ public struct TextKitMeasurer: TextMeasuring {
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        let text = Double(layout.usedRect(for: container).height)
+        // Floor at one base-font line (empty text), and include the extra fragment after a trailing newline.
+        let line = Double(layout.defaultLineHeight(for: NSFont.systemFont(ofSize: AttributedBridge.baseSize)))
+        let extra = Double(layout.extraLineFragmentRect.height)
+        let text = max(Double(layout.usedRect(for: container).height), line, extra)
         return Metrics.handleHeight + Metrics.inset * 2 + text
     }
 }
