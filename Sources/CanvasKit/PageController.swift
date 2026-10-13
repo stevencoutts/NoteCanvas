@@ -13,7 +13,8 @@ public final class PageController {
     private let measurer = TextKitMeasurer()
     private var history = History<Page>()
     private var selected: UUID?
-    private var typingOpen = false                  // one undo step per typing session
+    private var typingContainer: UUID?              // container whose typing session is the open undo step
+    private var justCreated: UUID?                  // box made by a background click, not yet typed in
     private var dragStart: Page?
     private var dragRecorded = false
     private var persistWork: DispatchWorkItem?
@@ -70,7 +71,8 @@ public final class PageController {
     /// Applies an undoable change and re-renders every container's text.
     private func commit(_ change: (inout Page) -> Void) {
         history.record(page)
-        typingOpen = false
+        typingContainer = nil
+        justCreated = nil
         change(&page)
         page.relayout(using: measurer)
         refresh(force: true)
@@ -85,11 +87,16 @@ public final class PageController {
         let c = TextContainer(id: id, frame: Frame(x: Double(point.x), y: Double(point.y), width: 240, height: 0), paragraphs: [])
         commit { $0.add(.text(c)) }
         selected = id
+        justCreated = id
         refresh(force: false)
         pageView.focus(id)
     }
 
-    private func select(_ id: UUID?) { selected = id; refresh(force: false) }
+    private func select(_ id: UUID?) {
+        if id != selected { typingContainer = nil }
+        selected = id
+        refresh(force: false)
+    }
 
     private func beginDrag(_ id: UUID) {
         select(id)
@@ -99,7 +106,7 @@ public final class PageController {
 
     private func drag(_ change: (inout Page) -> Void) {
         guard let start = dragStart else { return }
-        if !dragRecorded { history.record(start); typingOpen = false; dragRecorded = true }
+        if !dragRecorded { history.record(start); typingContainer = nil; justCreated = nil; dragRecorded = true }
         var p = start
         change(&p)
         p.relayout(using: measurer)
@@ -114,7 +121,8 @@ public final class PageController {
 
     private func textEdited(_ id: UUID, _ text: NSAttributedString) {
         guard !isRefreshing else { return }
-        if !typingOpen { history.record(page); typingOpen = true }
+        if typingContainer != id { history.record(page); typingContainer = id }
+        if justCreated != nil { justCreated = nil }
         let paragraphs = AttributedBridge.paragraphs(from: text)
         page.setParagraphs(id, paragraphs)
         page.relayout(using: measurer)
@@ -129,6 +137,8 @@ public final class PageController {
         guard !isRefreshing else { return }
         guard case .text(let t)? = page.objects.first(where: { $0.id == id }),
               t.paragraphs.allSatisfy({ $0.runs.isEmpty }) else { return }
+        typingContainer = nil
+        if justCreated == id { history.discardLast(); justCreated = nil }
         page.delete(id)
         if selected == id { selected = nil }
         refresh(force: false)
@@ -154,7 +164,8 @@ public final class PageController {
 
     private func restore(_ p: Page) {
         page = p
-        typingOpen = false
+        typingContainer = nil
+        justCreated = nil
         if let s = selected, !p.objects.contains(where: { $0.id == s }) { selected = nil }
         refresh(force: true)
         persist()

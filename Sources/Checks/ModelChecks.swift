@@ -114,6 +114,18 @@ func historyChecks() {
     h.record(9)
     check(!h.canRedo, "a new edit clears redo")
 
+    var d = History<Int>()
+    d.discardLast()
+    check(!d.canUndo, "discardLast on empty history is a no-op")
+    d.record(1); d.record(2)
+    d.discardLast()
+    checkEqual(d.undo(current: 3), 1, "discardLast drops the newest snapshot")
+    var d2 = History<Int>()
+    d2.record(1); d2.record(2)
+    _ = d2.undo(current: 3)                        // redo stack now non-empty
+    d2.discardLast()
+    check(d2.canRedo, "discardLast does not clear redo")
+
     var capped = History<Int>(limit: 3)
     for i in 0..<10 { capped.record(i) }
     var seen: [Int] = []

@@ -16,6 +16,9 @@ public struct History<State> {
         redoStack.removeAll()
     }
 
+    /// Drops the newest undo snapshot (for a change that is being silently reverted). Leaves redo alone.
+    public mutating func discardLast() { _ = undoStack.popLast() }
+
     public mutating func undo(current: State) -> State? {
         guard let previous = undoStack.popLast() else { return nil }
         redoStack.append(current)
