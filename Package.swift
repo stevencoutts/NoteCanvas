@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "PageModel"),
-        .executableTarget(name: "Checks", dependencies: ["PageModel"]),
+        .target(name: "Store", dependencies: ["PageModel"]),
+        .executableTarget(name: "Checks", dependencies: ["PageModel", "Store"]),
     ],
     swiftLanguageModes: [.v5]
 )
