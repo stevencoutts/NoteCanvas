@@ -51,3 +51,44 @@ Date: 2026-10-13. Output of a throwaway probe; the probe code was Python in a sc
 Proceed with the reader (milestone 2). Effort estimate: moderate. The container layer is about 500–800 lines of Swift; the object-graph and model mapping about as much again; tests are easy because the probe gives structural assertions per file.
 
 Before specifying ink and tables, either scan the whole backup set for their object types (counts only), or have the user create a few throwaway notebooks containing a table, ink, an image and an embedded file. Treat the `.one` writer (milestone 4) as a separate spike: generate a minimal valid file and see whether OneNote opens it.
+
+## Addendum: corpus scan (all 613 backup files, 559 MB)
+
+Read-only, counts only; no names, titles or text were printed. Approved by the user as a follow-up to the spike.
+
+**Parse health.** 613 of 613 files parsed with **zero errors** (valid header, file node lists, property sets). 603 contain pages; 10 are section-only files with no pages.
+
+**Object types by number of files containing them** (declarations include every revision, so counts overstate live objects):
+
+| Object type | Files | % of files | Declarations |
+|---|---|---|---|
+| Page / PageManifest / Title | 603 | 98% | ~2,180 each |
+| Outline (text container) | 603 | 98% | 10,519 |
+| OutlineElement (paragraph) | 603 | 98% | 144,523 |
+| RichText | 603 | 98% | 142,304 |
+| ParagraphStyleObject | 603 | 98% | 12,949 |
+| NumberList (bullets / numbering) | 160 | 26% | 13,960 |
+| Image | 179 | 29% | 2,487 |
+| **Table** (+ rows, cells) | **63** | **10%** | 334 tables, 2,945 rows, 10,040 cells |
+| OutlineGroup | 38 | 6% | 108 |
+| EmbeddedFile | 36 | 6% | 112 |
+| NoteTag definitions | 20 | 3% | 74 |
+| **Object types not in the MS-ONE table** | **9** | **1.5%** | 10 distinct JCIDs |
+
+**Ink.** No object type in the MS-ONE table is ink. Ten JCIDs that are *not* in the spec appear in 5 to 9 files each, for example `0x60014` (760 declarations across 6 files, each carrying about eight 4-byte numeric properties) together with `0x2003B` and `0x20047` (also 760). That pattern is consistent with per-stroke objects but this is an inference: the spike did not decode them and cannot confirm they are ink. They exist in at most about 1.5% of the user's files.
+
+**Undocumented properties.** 80 distinct property IDs are not in the MS-ONE table (293,246 occurrences). The most frequent sit on:
+- RichText nodes (`0x80034dd` bool in 551 files, `0x1C001CC8` blob in 599, `0x40003489` array in 20);
+- ParagraphStyleObject (`0x80034AA`, `0xC003452`, `0x8003405`, `0x8003406` in 601 files, plus `0x140034B6` in 47);
+- PageNode (`0x14001C9E`-`0x14001CA1`, four floats, in 601 files);
+- ImageNode (`0x14001DF9`, `0x1C001D61`, `0x1400500A` and others in 122-160 files);
+- NumberListNode (`0xC001CC0`, `0x1C001CDA`);
+- section and page metadata.
+
+Their meaning is unknown. None is a layout or documented-formatting property, but some on ParagraphStyleObject may carry formatting the spec omits. This is the main fidelity unknown for the reader.
+
+**Implications for the milestone-2 spec**
+1. Tables are common enough (10% of files, about 10,000 cells) that they need an honest treatment on import, not a drop-the-object fallback; milestone 2 should at least read table structure and cell content, even if the editor gets table tools only in milestone 3.
+2. Images are in almost a third of files; the reader must resolve `PictureContainer` to file data objects.
+3. Ink is rare (about 1%) and undocumented; the reader should skip unknown object types gracefully, record them in the loss report, and not make ink a milestone-2 deliverable.
+4. The reader must tolerate unknown JCIDs and property IDs everywhere (never fail on them).
