@@ -34,8 +34,21 @@ enum StyleMapper {
     }
 }
 
+/// Remembers which style objects have already had their unread properties counted (one ledger per page).
+final class StyleLedger {
+    var seen = Set<ExtendedGUID>()
+}
+
 struct ParagraphMapper {
     let graph: ObjectGraph
+    private let ledger = StyleLedger()
+
+    init(graph: ObjectGraph) { self.graph = graph }
+
+    /// Counts the unread properties of a style object, at most once per object per ledger.
+    private func noteStyle(_ style: OneObject, _ report: inout ImportReport) {
+        if ledger.seen.insert(style.id).inserted { report.noteIgnoredProperties(of: style, consumed: PID.consumedByStyle) }
+    }
 
     /// Numbered when the NumberListFormat string contains U+FFFD (the numbering character), else a bullet.
     static func listStyle(of numberList: OneObject) -> ListStyle {
@@ -71,6 +84,7 @@ struct ParagraphMapper {
         var styleCharset: UInt8?
         var styleAlignment: UInt8?
         if let styleID = p.objectIDs(PID.paragraphStyle).first, let styleObj = graph.object(styleID) {
+            noteStyle(styleObj, &report)
             StyleMapper.apply(styleObj, to: &base)
             styleCharset = styleObj.properties.u8(PID.charset)
             styleAlignment = styleObj.properties.u8(PID.paragraphAlignment)
@@ -107,6 +121,7 @@ struct ParagraphMapper {
             if slice.isEmpty { continue }
             var style = base
             if i < formats.count, let f = formats[i] {
+                noteStyle(f, &report)
                 StyleMapper.apply(f, to: &style)
                 if f.properties.bool(PID.hyperlink) == true, style.link == nil { report.approximated("hyperlinkWithoutURL") }
             }

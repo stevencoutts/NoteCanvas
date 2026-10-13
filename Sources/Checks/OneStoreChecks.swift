@@ -268,6 +268,7 @@ func corpusChecks() {
     }
     var files = 0, parsed = 0, failed = 0, withPages = 0, pages = 0, withWarnings = 0
     var errorKinds: [String: Int] = [:]
+    var warningKinds: [String: Int] = [:]
     for case let url as URL in walker where url.pathExtension == "one" {
         guard (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0 else { continue }
         files += 1
@@ -275,14 +276,40 @@ func corpusChecks() {
             let file = try OneFile(data: Data(contentsOf: url, options: .mappedIfSafe))
             parsed += 1
             if !file.warnings.isEmpty { withWarnings += 1 }
+            for w in file.warnings { warningKinds[warningKind(w), default: 0] += 1 }
             let n = file.objectSpaces.filter { s in s.revisions.contains { s.rootObject(of: $0)?.jcid == .pageManifest } }.count
             pages += n
             if n > 0 { withPages += 1 }
         } catch {
             failed += 1
-            errorKinds["\(error)".prefix(40).description, default: 0] += 1
+            errorKinds[safeErrorKey(error), default: 0] += 1
         }
     }
     print("corpus: files=\(files) parsed=\(parsed) failed=\(failed) withPages=\(withPages) pageSpaces=\(pages) filesWithWarnings=\(withWarnings) errors=\(errorKinds)")
+    for (kind, n) in warningKinds.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) {
+        print("corpus warning kind: \(n) x \(kind)")
+    }
     check(failed == 0, "every corpus file parses")
+}
+
+/// A key that names the kind of an error without any payload text (which could echo a file name).
+func safeErrorKey(_ error: Error) -> String {
+    guard let e = error as? OneStoreError else { return "\(type(of: error))" }
+    switch e {
+    case .notAOneFile: return "notAOneFile"
+    case .unsupportedFileType: return "unsupportedFileType"
+    case .unsupportedVersion: return "unsupportedVersion"
+    case .truncated: return "truncated"
+    case .corrupt: return "corrupt"
+    }
+}
+
+/// A warning with every number (decimal run, or hex after "0x") replaced by `#`. Warnings are built from offsets,
+/// counts and fixed reason text only, never from note content.
+func warningKind(_ message: String) -> String {
+    var s = message
+    for pattern in ["0x[0-9a-fA-F]+", "[0-9]+"] {
+        s = s.replacingOccurrences(of: pattern, with: "#", options: .regularExpression)
+    }
+    return s
 }
