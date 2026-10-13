@@ -3,8 +3,11 @@ import PageModel
 
 final class PageView: NSView {
     var configure: ((ContainerView) -> Void)?
+    var configureObject: ((ObjectView) -> Void)?
     var onBackgroundClick: ((NSPoint) -> Void)?
+    var assets: (String) -> Data? = { _ in nil }
     private var views: [UUID: ContainerView] = [:]
+    private var objectViews: [UUID: ObjectView] = [:]
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }   // holds keyboard focus while a box is selected as an object
@@ -18,28 +21,51 @@ final class PageView: NSView {
     override func draw(_ dirtyRect: NSRect) { NSColor.white.setFill(); dirtyRect.fill() }
     override func mouseDown(with event: NSEvent) { onBackgroundClick?(convert(event.locationInWindow, from: nil)) }
 
+    private func makeContent(for object: PageObject) -> ObjectContentView {
+        switch object {
+        case .image: return ImageContentView()
+        case .table: return TableContentView()
+        case .attachment: return AttachmentContentView()
+        case .text: return ObjectContentView()
+        }
+    }
+
     func sync(_ page: Page, forceText: Bool, selected: UUID?) {
         let ids = Set(page.objects.map(\.id))
         for (id, v) in views where !ids.contains(id) { v.removeFromSuperview(); views[id] = nil }
+        for (id, v) in objectViews where !ids.contains(id) { v.removeFromSuperview(); objectViews[id] = nil }
 
         var extentX = 0.0, extentY = 0.0
-        var order: [ContainerView] = []
+        var order: [NSView] = []
         for obj in page.objects {
-            guard case .text(let t) = obj else { continue }
-            let v: ContainerView
-            if let existing = views[t.id] { v = existing } else {
-                v = ContainerView(id: t.id); views[t.id] = v; addSubview(v); configure?(v)
+            let f = obj.frame
+            extentX = max(extentX, f.x + f.width)
+            extentY = max(extentY, f.y + f.height)
+            switch obj {
+            case .text(let t):
+                let v: ContainerView
+                if let existing = views[t.id] { v = existing } else {
+                    v = ContainerView(id: t.id); views[t.id] = v; addSubview(v); configure?(v)
+                }
+                v.frame = NSRect(x: f.x, y: f.y, width: f.width, height: f.height)
+                if forceText || !v.isEditing { v.setParagraphs(t.paragraphs) }
+                v.isSelectedObject = (t.id == selected)
+                order.append(v)
+            case .image, .table, .attachment:
+                let v: ObjectView
+                if let existing = objectViews[obj.id] { v = existing } else {
+                    v = ObjectView(id: obj.id, content: makeContent(for: obj))
+                    objectViews[obj.id] = v; addSubview(v); configureObject?(v)
+                }
+                v.frame = NSRect(x: f.x, y: f.y, width: f.width, height: f.height)
+                v.content.update(obj, assets: assets)
+                v.isSelectedObject = (obj.id == selected)
+                order.append(v)
             }
-            v.frame = NSRect(x: t.frame.x, y: t.frame.y, width: t.frame.width, height: t.frame.height)
-            if forceText || !v.isEditing { v.setParagraphs(t.paragraphs) }
-            v.isSelectedObject = (t.id == selected)
-            order.append(v)
-            extentX = max(extentX, t.frame.x + t.frame.width)
-            extentY = max(extentY, t.frame.y + t.frame.height)
         }
 
         // Only reorder when z-order actually changed: re-adding a view resigns its first responder.
-        let current = subviews.compactMap { $0 as? ContainerView }
+        let current = subviews.filter { $0 is ContainerView || $0 is ObjectView }
         if current != order {
             let responder = window?.firstResponder
             for v in order { v.removeFromSuperview(); addSubview(v) }

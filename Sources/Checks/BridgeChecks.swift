@@ -206,4 +206,21 @@ func bridgeChecks() {
     check(m.height(of: aThenEmpty, width: 300) > m.height(of: oneA, width: 300), "trailing empty paragraph adds height")
     let tall = [Paragraph(runs: [run("Title", { $0.fontSize = 14 })], heading: 1)]
     check(m.height(of: tall, width: 300) > m.height(of: single, width: 300), "headings are taller than body text")
+
+    // textHeight is the text alone; height adds the container chrome (handle strip, insets, grip).
+    let tk = TextKitMeasurer()
+    let sample = [Paragraph(runs: [run("some words to measure")])]
+    checkEqual(tk.height(of: sample, width: 314), 26 + tk.textHeight(of: sample, width: 300),
+               "height = chrome (14 + 2*6) + text laid out at width - 6 - 8")
+    check(tk.textHeight(of: sample, width: 300) >= 13, "text height is at least one line")
+    let words = [Paragraph(runs: [run(String(repeating: "word ", count: 40))])]
+    check(tk.textHeight(of: words, width: 60) > tk.textHeight(of: words, width: 600) * 2, "a narrow table cell wraps and grows")
+    let cellTable = TableObject(id: UUID(), frame: Frame(x: 0, y: 0, width: 0, height: 0), columnWidths: [60, 400],
+                                rows: [[TableCell(paragraphs: words), TableCell(paragraphs: [])]], bordersVisible: true)
+    let heights = cellTable.rowHeights(using: tk)
+    check(heights[0] > TableObject.minRowHeight * 2, "a row grows to fit its tallest cell")
+    var tablePage = Page(id: UUID(), title: "t", objects: [.table(cellTable)])
+    tablePage.relayout(using: tk)
+    checkEqual(tablePage.objects[0].frame.height, heights[0], "relayout gives a table the same height drawing uses")
+    checkEqual(tablePage.objects[0].frame.width, 460, "…and the sum of its column widths")
 }

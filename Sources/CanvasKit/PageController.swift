@@ -8,7 +8,7 @@ public final class PageController {
     public var view: NSView { pageView }
     public var hasSelectedObject: Bool { selected != nil }
 
-    static let pasteboardType = NSPasteboard.PasteboardType("com.notecanvas.container")
+    static let pasteboardType = NSPasteboard.PasteboardType("com.notecanvas.object")
 
     private let pageView = PageView(frame: .zero)
     private let measurer = TextKitMeasurer()
@@ -22,9 +22,11 @@ public final class PageController {
     private var isRefreshing = false                // true while PageView.sync runs; focus changes then are programmatic
     private var sparing: UUID?                      // box whose own strip was grabbed: losing focus must not remove it
 
-    public init(page: Page) {
+    public init(page: Page, assets: @escaping (String) -> Data? = { _ in nil }) {
         self.page = page
+        pageView.assets = assets
         pageView.configure = { [weak self] v in self?.wire(v) }
+        pageView.configureObject = { [weak self] v in self?.wireObject(v) }
         pageView.onBackgroundClick = { [weak self] point in self?.backgroundClicked(at: point) }
         self.page.relayout(using: measurer)
         refresh(force: true)
@@ -46,6 +48,14 @@ public final class PageController {
         v.onTextChange = { [weak self] text in self?.textEdited(id, text) }
         v.onEndEditing = { [weak self] in self?.endEditing(id) }
         v.onFocus = { [weak self] in self?.textFocused() }
+    }
+
+    /// Images, tables and attachments move, select, copy, delete and reorder like text boxes; their content is read-only.
+    private func wireObject(_ v: ObjectView) {
+        let id = v.id
+        v.onDragBegin = { [weak self] in self?.beginDrag(id) }
+        v.onMove = { [weak self] dx, dy in self?.drag { $0.move(id, dx: dx, dy: dy) } }
+        v.onDragEnd = { [weak self] in self?.endDrag() }
     }
 
     private func refresh(force: Bool) {
@@ -211,18 +221,17 @@ public final class PageController {
     }
 
     public func copySelected() {
-        guard let id = selected, case .text(let t)? = page.objects.first(where: { $0.id == id }),
-              let data = try? JSONEncoder().encode(t) else { return }
+        guard let id = selected, let object = page.objects.first(where: { $0.id == id }),
+              let data = try? JSONEncoder().encode(object) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: Self.pasteboardType)
     }
 
     public func paste() {
         guard let data = NSPasteboard.general.data(forType: Self.pasteboardType),
-              var t = try? JSONDecoder().decode(TextContainer.self, from: data) else { return }
-        t.id = UUID()
-        t.frame.x += 20; t.frame.y += 20
-        selected = t.id
-        commit { $0.add(.text(t)) }
+              let object = try? JSONDecoder().decode(PageObject.self, from: data) else { return }
+        let copy = object.duplicated(dx: 20, dy: 20)
+        selected = copy.id
+        commit { $0.add(copy) }
     }
 }

@@ -1,6 +1,9 @@
 import AppKit
+import OneImport
+import OneStore
 import PageModel
 import Store
+import UniformTypeIdentifiers
 
 public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
     private var window: NSWindow!
@@ -11,6 +14,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var saveFailureReported = false     // one alert per run of failed saves; a successful save resets it
     private var isFlushing = false              // flush callers explain a failure themselves
     private var revertingSelection = false
+    private var currentSection = 0
+    private let sectionPopup = NSPopUpButton()
+    private var importCancel: ImportCancelFlag?
+    private var progressSheet: NSPanel?
 
     private let table = NSTableView()
     private let canvasScroll = NSScrollView()
@@ -91,6 +98,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func closeNotebook() {
         dropPage()
         package = nil
+        currentSection = 0
+        rebuildSectionPopup()
         table.deselectAll(nil)
         reloadPages()
         window.title = "NoteCanvas"
@@ -103,6 +112,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         dropPage()
         table.deselectAll(nil)
         package = pkg
+        currentSection = 0
+        rebuildSectionPopup()
         window.title = pkg.notebook.name
         reloadPages()
         if pages.isEmpty, var p = package {
@@ -112,8 +123,29 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func reloadPages() {
-        pages = package?.notebook.sections.first?.pages ?? []
+        let sections = package?.notebook.sections ?? []
+        if !sections.indices.contains(currentSection) { currentSection = 0 }
+        pages = sections.indices.contains(currentSection) ? sections[currentSection].pages : []
         table.reloadData()
+    }
+
+    /// The popup lists section names; duplicate names are allowed, so items are added to the menu directly.
+    private func rebuildSectionPopup() {
+        sectionPopup.removeAllItems()
+        let names = package?.notebook.sections.map(\.name) ?? []
+        for name in names { sectionPopup.menu?.addItem(NSMenuItem(title: name, action: nil, keyEquivalent: "")) }
+        if names.indices.contains(currentSection) { sectionPopup.selectItem(at: currentSection) }
+        sectionPopup.isEnabled = !names.isEmpty
+    }
+
+    @objc func pickSection(_ sender: Any?) {
+        let index = sectionPopup.indexOfSelectedItem
+        guard index >= 0, index != currentSection, saveOrDiscard("Continue") else { rebuildSectionPopup(); return }
+        currentSection = index
+        dropPage()
+        table.deselectAll(nil)
+        reloadPages()
+        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
     }
 
     private func showPage(_ id: UUID) {
@@ -134,7 +166,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard let pkg = package else { return }
         do {
             let page = try pkg.loadPage(id)
-            let c = PageController(page: page)
+            let c = PageController(page: page, assets: { [weak self] name in self?.package?.loadAsset(name) })
             c.onPersist = { [weak self] page in self?.save(page) ?? false }
             controller = c
             canvasScroll.documentView = c.view
@@ -229,7 +261,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     @objc func addPage(_ sender: Any?) {
         commitEditing()
         guard var pkg = package else { return }
-        do { _ = try pkg.addPage(title: "Untitled Page"); package = pkg; reloadPages()
+        do { _ = try pkg.addPage(title: "Untitled Page", section: currentSection); package = pkg; reloadPages()
              table.selectRowIndexes([pages.count - 1], byExtendingSelection: false)
         } catch { show(error) }
     }
@@ -254,6 +286,102 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) { controller?.setTitle(titleField.stringValue) }
+
+    // MARK: import
+
+    @objc func importOne(_ sender: Any?) {
+        guard let pkg = package else {
+            inform("Open a notebook first", "Create or open a notebook, then choose File > Import .one…")
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose a OneNote section file (.one) to import as a new section"
+        if let type = UTType(filenameExtension: "one") { panel.allowedContentTypes = [type] }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard saveOrDiscard("Import") else { return }
+        let cancel = ImportCancelFlag()
+        importCancel = cancel
+        beginProgressSheet(fileName: url.lastPathComponent)
+        ImportRunner.run(file: url, into: pkg, cancel: cancel) { [weak self] outcome in
+            self?.endProgressSheet()
+            self?.finishImport(outcome)
+        }
+    }
+
+    @objc func cancelImport(_ sender: Any?) { importCancel?.cancel() }
+
+    private func beginProgressSheet(fileName: String) {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Importing"
+        let label = NSTextField(labelWithString: "Importing “\(fileName)”…")
+        let bar = NSProgressIndicator()
+        bar.style = .bar
+        bar.isIndeterminate = true
+        bar.startAnimation(nil)
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelImport(_:)))
+        let stack = NSStackView(views: [label, bar, cancelButton])
+        stack.orientation = .vertical
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        bar.widthAnchor.constraint(equalToConstant: 328).isActive = true
+        panel.contentView = stack
+        progressSheet = panel
+        window.beginSheet(panel, completionHandler: nil)
+    }
+
+    private func endProgressSheet() {
+        if let panel = progressSheet { window.endSheet(panel); panel.orderOut(nil) }
+        progressSheet = nil
+        importCancel = nil
+    }
+
+    private func finishImport(_ outcome: ImportOutcome) {
+        if let error = outcome.error {
+            inform("The file could not be imported", importMessage(error))
+            return
+        }
+        if outcome.cancelled {
+            inform("Import cancelled", "Nothing was added to the notebook.")
+            return
+        }
+        guard let pkg = outcome.package, let section = outcome.section, let result = outcome.result else { return }
+        package = pkg
+        currentSection = pkg.notebook.sections.firstIndex { $0.id == section.id } ?? 0
+        rebuildSectionPopup()
+        dropPage()
+        table.deselectAll(nil)
+        reloadPages()
+        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        let a = NSAlert()
+        a.messageText = "Imported “\(section.name)”"
+        a.informativeText = importSummary(result.report)
+        a.runModal()
+    }
+
+    private func importMessage(_ error: Error) -> String {
+        switch error as? OneStoreError {
+        case .some(.notAOneFile): return "This is not a OneNote section file (.one)."
+        case .some(.unsupportedFileType): return "This kind of OneNote file (a notebook table of contents) is not supported."
+        case .some(.unsupportedVersion): return "This file was written by a newer version of OneNote than this app can read."
+        case .some(.truncated), .some(.corrupt): return "The file is damaged or incomplete, so nothing was imported.\n\n\(error)"
+        case .none: return "\(error)"
+        }
+    }
+
+    private func importSummary(_ r: ImportReport) -> String {
+        var lines = ["Pages imported: \(r.pagesImported) of \(r.pagesTotal)" + (r.pagesFailed > 0 ? " (\(r.pagesFailed) could not be read)" : "")]
+        for (key, label) in [("text", "text boxes"), ("image", "images"), ("table", "tables"), ("attachment", "attachments")] {
+            if let n = r.objectsImported[key], n > 0 { lines.append("\(n) \(label)") }
+        }
+        let skipped = r.skippedObjectTypes.values.reduce(0, +)
+        if skipped > 0 { lines.append("\(skipped) objects of types this version does not support were skipped.") }
+        let simplified = r.approximations.values.reduce(0, +)
+        if simplified > 0 { lines.append("\(simplified) details were simplified.") }
+        lines.append("A report with these counts (no note content) is saved inside the notebook, in its imports folder.")
+        return lines.joined(separator: "\n")
+    }
 
     // MARK: format bar actions
 
@@ -289,6 +417,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     /// Backspace is Delete Object's key equivalent; never let it fire while a text view has focus (it would eat the keystroke).
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if importCancel != nil { return false }     // an import is running: no menu action may replace the notebook under it
         guard item.action == #selector(deleteObject(_:)) else { return true }
         guard controller?.hasSelectedObject == true else { return false }
         if NSApp.currentEvent?.type == .keyDown {
@@ -328,10 +457,14 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         sideScroll.hasVerticalScroller = true
         let add = button("+", #selector(addPage(_:)), tip: "Add page")
         let remove = button("−", #selector(removePage(_:)), tip: "Delete page")
+        sectionPopup.target = self
+        sectionPopup.action = #selector(pickSection(_:))
+        sectionPopup.refusesFirstResponder = true
         let sideButtons = NSStackView(views: [add, remove])
-        let side = NSStackView(views: [sideScroll, sideButtons])
+        let side = NSStackView(views: [sectionPopup, sideScroll, sideButtons])
         side.orientation = .vertical
         side.alignment = .leading
+        sectionPopup.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true
         side.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
         headingPopup.addItems(withTitles: ["Body", "Heading 1", "Heading 2", "Heading 3"])
@@ -394,6 +527,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("New Notebook…", #selector(newNotebook(_:)), "n", in: file)
         item("Open Notebook…", #selector(openNotebook(_:)), "o", in: file)
         item("New Page", #selector(addPage(_:)), "t", in: file)
+        item("Import .one…", #selector(importOne(_:)), "i", in: file)
         let edit = submenu("Edit")
         item("Undo", #selector(undoAction(_:)), "z", in: edit)
         item("Redo", #selector(redoAction(_:)), "z", mods: [.command, .shift], in: edit)

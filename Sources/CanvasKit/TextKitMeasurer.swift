@@ -10,19 +10,24 @@ enum Metrics {
 public struct TextKitMeasurer: TextMeasuring {
     public init() {}
 
-    public func height(of paragraphs: [Paragraph], width: Double) -> Double {
+    /// Height of the text alone laid out at exactly `width` (no container chrome); at least one base-font line,
+    /// and it includes the extra fragment after a trailing newline.
+    public func textHeight(of paragraphs: [Paragraph], width: Double) -> Double {
         let storage = NSTextStorage(attributedString: AttributedBridge.attributed(from: paragraphs))
-        let textWidth = max(width - Metrics.inset - Metrics.gripWidth, 1)
-        let container = NSTextContainer(size: NSSize(width: textWidth, height: .greatestFiniteMagnitude))
+        let container = NSTextContainer(size: NSSize(width: max(width, 1), height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         let layout = NSLayoutManager()
         layout.addTextContainer(container)
         storage.addLayoutManager(layout)
         layout.ensureLayout(for: container)
-        // Floor at one base-font line (empty text), and include the extra fragment after a trailing newline.
         let line = Double(layout.defaultLineHeight(for: NSFont.systemFont(ofSize: AttributedBridge.baseSize)))
         let extra = Double(layout.extraLineFragmentRect.height)
-        let text = max(Double(layout.usedRect(for: container).height), line, extra)
-        return Metrics.handleHeight + Metrics.inset * 2 + text
+        return max(Double(layout.usedRect(for: container).height), line, extra)
+    }
+
+    /// A text container: the handle strip, the insets and the grip around text laid out in the remaining width.
+    public func height(of paragraphs: [Paragraph], width: Double) -> Double {
+        Metrics.handleHeight + Metrics.inset * 2
+            + textHeight(of: paragraphs, width: max(width - Metrics.inset - Metrics.gripWidth, 1))
     }
 }
