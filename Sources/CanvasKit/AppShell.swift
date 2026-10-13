@@ -290,7 +290,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     // MARK: import
 
     @objc func importOne(_ sender: Any?) {
-        guard let pkg = package else {
+        guard package != nil else {
             inform("Open a notebook first", "Create or open a notebook, then choose File > Import .one…")
             return
         }
@@ -301,6 +301,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if let type = UTType(filenameExtension: "one") { panel.allowedContentTypes = [type] }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard saveOrDiscard("Import") else { return }
+        // Snapshot only after the flush. A title edit writes notebook.json, and the open panel's
+        // run loop can land that autosave too. The importer later commits this snapshot plus the
+        // new section; a copy taken before the flush would put the old title back.
+        guard let pkg = package else { return }
         let cancel = ImportCancelFlag()
         importCancel = cancel
         beginProgressSheet(fileName: url.lastPathComponent)
