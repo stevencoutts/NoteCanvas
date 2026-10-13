@@ -51,11 +51,40 @@ func storeChecks() {
     checkEqual(checkThrows("save unknown") { try pkg.savePage(Page(id: UUID(), title: "x", objects: [])) } != nil,
                true, "saving a page the manifest does not list throws")
 
-    // delete
-    try! pkg.deletePage(id: page.id)
+    // A failed manifest write leaves the in-memory notebook as it is on disk (package folder made read-only;
+    // pages/ stays writable, so only the manifest write fails).
+    let fm = FileManager.default
+    func setWritable(_ on: Bool) {
+        try! fm.setAttributes([.posixPermissions: on ? 0o755 : 0o555], ofItemAtPath: url.path)
+    }
+    var retitled = page
+    retitled.title = "Retitled"
+    setWritable(false)
+    check(checkThrows("save with read-only manifest") { try pkg.savePage(retitled) } != nil, "savePage reports a failed manifest write")
+    checkEqual(pkg.notebook.sections[0].pages.map(\.title), ["Renamed", "Second"],
+               "a failed manifest write does not change the in-memory titles")
+    check(checkThrows("delete with read-only manifest") { try pkg.deletePage(id: page.id) } != nil,
+          "deletePage reports a failed manifest write")
+    checkEqual(pkg.notebook.sections[0].pages.map(\.id), [page.id, other.id], "a failed delete keeps the reference in memory")
+    check(fm.fileExists(atPath: url.appendingPathComponent("pages/\(page.id.uuidString).json").path), "a failed delete keeps the file")
+    check(checkThrows("add with read-only manifest") { try pkg.addPage(title: "Third") } != nil, "addPage reports a failed manifest write")
+    checkEqual(pkg.notebook.sections[0].pages.map(\.id), [page.id, other.id], "a failed add does not list the page in memory")
+    setWritable(true)
+    check((try? pkg.savePage(retitled)) != nil, "retrying the save once the folder is writable succeeds")
+    checkEqual(try! NotebookPackage.open(at: url).notebook.sections[0].pages.map(\.title), ["Retitled", "Second"],
+               "retrying the save once the folder is writable writes the new title")
+
+    // delete: manifest first, then the page file goes to the Trash (recoverable), not removed outright
+    let trashed = try! pkg.deletePage(id: page.id)
     checkEqual(pkg.notebook.sections[0].pages.map(\.id), [other.id], "delete removes the reference")
-    check(!FileManager.default.fileExists(atPath: url.appendingPathComponent("pages/\(page.id.uuidString).json").path),
-          "delete removes the file")
+    check(!fm.fileExists(atPath: url.appendingPathComponent("pages/\(page.id.uuidString).json").path),
+          "delete removes the file from the package")
+    if let trashed {
+        check(fm.fileExists(atPath: trashed.path), "the deleted page file is in the Trash")
+        try? fm.removeItem(at: trashed)                    // do not leave test files in the user's Trash
+    } else {
+        check(false, "deletePage reports where it trashed the page file")
+    }
 
     // foreign / future / garbage (Review Focus 4)
     let plain = root.appendingPathComponent("plain")

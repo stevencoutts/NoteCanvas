@@ -47,6 +47,12 @@ public struct NotebookPackage {
         try Self.encode(notebook).write(to: manifestURL, options: .atomic)
     }
 
+    /// Writes `updated` as the manifest and only then adopts it, so a failed write leaves memory matching disk.
+    private mutating func commitManifest(_ updated: Notebook) throws {
+        try Self.encode(updated).write(to: manifestURL, options: .atomic)
+        notebook = updated
+    }
+
     private func write(_ page: Page) throws {
         try Self.encode(page).write(to: pageURL(page.id), options: .atomic)
     }
@@ -56,8 +62,9 @@ public struct NotebookPackage {
         guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
         let page = Page(id: UUID(), title: title, objects: [])
         try write(page)
-        notebook.sections[section].pages.append(PageRef(id: page.id, title: title))
-        try writeManifest()
+        var updated = notebook
+        updated.sections[section].pages.append(PageRef(id: page.id, title: title))
+        try commitManifest(updated)
         return page
     }
 
@@ -74,15 +81,23 @@ public struct NotebookPackage {
         }
         try write(page)
         if notebook.sections[s].pages[p].title != page.title {
-            notebook.sections[s].pages[p].title = page.title
-            try writeManifest()
+            var updated = notebook
+            updated.sections[s].pages[p].title = page.title
+            try commitManifest(updated)
         }
     }
 
     /// Manifest first, then the file: a crash in between leaves an orphan file, never a dangling reference.
-    public mutating func deletePage(id: UUID) throws {
-        for s in notebook.sections.indices { notebook.sections[s].pages.removeAll { $0.id == id } }
-        try writeManifest()
-        try? FileManager.default.removeItem(at: pageURL(id))
+    /// The file goes to the Trash so a mistaken delete can be recovered; if trashing fails the file is left
+    /// in place as an orphan (the manifest no longer lists it, so this is not an error).
+    /// Returns where the file went in the Trash, or nil if it was left in place.
+    @discardableResult
+    public mutating func deletePage(id: UUID) throws -> URL? {
+        var updated = notebook
+        for s in updated.sections.indices { updated.sections[s].pages.removeAll { $0.id == id } }
+        try commitManifest(updated)
+        var trashed: NSURL?
+        guard (try? FileManager.default.trashItem(at: pageURL(id), resultingItemURL: &trashed)) != nil else { return nil }
+        return trashed as URL?
     }
 }
