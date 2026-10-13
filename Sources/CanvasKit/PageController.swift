@@ -19,6 +19,7 @@ public final class PageController {
     private var dragRecorded = false
     private var persistWork: DispatchWorkItem?
     private var isRefreshing = false                // true while PageView.sync runs; focus changes then are programmatic
+    private var sparing: UUID?                      // box whose own strip was grabbed: losing focus must not remove it
 
     public init(page: Page) {
         self.page = page
@@ -43,6 +44,7 @@ public final class PageController {
         v.onDragEnd = { [weak self] in self?.endDrag() }
         v.onTextChange = { [weak self] text in self?.textEdited(id, text) }
         v.onEndEditing = { [weak self] in self?.endEditing(id) }
+        v.onFocus = { [weak self] in self?.textFocused() }
     }
 
     private func refresh(force: Bool) {
@@ -86,7 +88,6 @@ public final class PageController {
         let id = UUID()
         let c = TextContainer(id: id, frame: Frame(x: Double(point.x), y: Double(point.y), width: 240, height: 0), paragraphs: [])
         commit { $0.add(.text(c)) }
-        selected = id
         justCreated = id
         refresh(force: false)
         pageView.focus(id)
@@ -98,7 +99,12 @@ public final class PageController {
         refresh(force: false)
     }
 
+    /// Grabbing a strip selects the box as an object, so keyboard focus moves to the page: Copy, Paste and
+    /// Backspace then act on the selected box, not on whichever text view had focus.
     private func beginDrag(_ id: UUID) {
+        sparing = id
+        pageView.window?.makeFirstResponder(pageView)   // ends text editing; other empty boxes remove themselves
+        sparing = nil
         select(id)
         dragStart = page
         dragRecorded = false
@@ -119,6 +125,13 @@ public final class PageController {
         if dragRecorded { persist() }
     }
 
+    /// A text view took focus: the keyboard now edits text, so no box is selected as an object.
+    private func textFocused() {
+        guard !isRefreshing, selected != nil else { return }
+        selected = nil
+        refresh(force: false)
+    }
+
     private func textEdited(_ id: UUID, _ text: NSAttributedString) {
         guard !isRefreshing else { return }
         if typingContainer != id { history.record(page); typingContainer = id }
@@ -134,7 +147,7 @@ public final class PageController {
 
     /// An empty container is dropped when it loses focus, like clicking away from a fresh OneNote box.
     private func endEditing(_ id: UUID) {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, id != sparing else { return }
         guard case .text(let t)? = page.objects.first(where: { $0.id == id }),
               t.paragraphs.allSatisfy({ $0.runs.isEmpty }) else { return }
         typingContainer = nil

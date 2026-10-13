@@ -7,6 +7,7 @@ final class PageView: NSView {
     private var views: [UUID: ContainerView] = [:]
 
     override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }   // holds keyboard focus while a box is selected as an object
 
     override init(frame: NSRect) {
         super.init(frame: frame)

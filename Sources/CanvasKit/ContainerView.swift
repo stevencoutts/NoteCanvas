@@ -20,11 +20,21 @@ final class DragStrip: NSView {
     override func mouseUp(with event: NSEvent) { onEnd?() }
 }
 
+/// Reports when it takes keyboard focus (a click, Tab, or a programmatic focus).
+final class BoxTextView: NSTextView {
+    var onFocus: (() -> Void)?
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onFocus?() }
+        return ok
+    }
+}
+
 final class ContainerView: NSView, NSTextViewDelegate {
     let id: UUID
     let handle = DragStrip()
     let grip = DragStrip()
-    let textView = NSTextView(usingTextLayoutManager: false)   // TextKit 1, matches TextKitMeasurer
+    let textView = BoxTextView(usingTextLayoutManager: false)  // TextKit 1, matches TextKitMeasurer
 
     var onDragBegin: (() -> Void)?
     var onMove: ((Double, Double) -> Void)?
@@ -33,6 +43,10 @@ final class ContainerView: NSView, NSTextViewDelegate {
     var onDragEnd: (() -> Void)?
     var onTextChange: ((NSAttributedString) -> Void)?
     var onEndEditing: (() -> Void)?
+    var onFocus: (() -> Void)? {
+        get { textView.onFocus }
+        set { textView.onFocus = newValue }
+    }
 
     var isSelectedObject = false { didSet { needsDisplay = true } }
     var isEditing: Bool { window?.firstResponder === textView }
@@ -86,15 +100,28 @@ final class ContainerView: NSView, NSTextViewDelegate {
         }
     }
 
+    /// Re-renders the text, carrying the selection over as (paragraph, body offset) so a marker that
+    /// appears or disappears does not leave the caret inside or before it.
     func setParagraphs(_ paragraphs: [Paragraph]) {
-        let selection = textView.selectedRange()
-        textView.textStorage?.setAttributedString(AttributedBridge.attributed(from: paragraphs))
-        let length = (textView.string as NSString).length
-        textView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
+        let selection = AttributedBridge.bodySelection(textView.selectedRange(), in: textView.attributedString())
+        let text = AttributedBridge.attributed(from: paragraphs)
+        textView.textStorage?.setAttributedString(text)
+        let range = AttributedBridge.range(of: selection, in: text)
+        textView.setSelectedRange(range)
+        // The empty line after a final "\n" has no character of its own, so NSTextView would type into it with the
+        // previous paragraph's attributes (e.g. bring back a bullet the user just removed); use the model's instead.
+        if let last = paragraphs.last, range.location == text.length, text.string.hasSuffix("\n") {
+            textView.typingAttributes.merge(AttributedBridge.paragraphAttributes(last)) { $1 }
+        }
     }
 
     // MARK: NSTextViewDelegate
     func textDidChange(_ notification: Notification) { onTextChange?(textView.attributedString()) }
     func textDidEndEditing(_ notification: Notification) { needsDisplay = true; onEndEditing?() }
     func textDidBeginEditing(_ notification: Notification) { needsDisplay = true }
+    /// Text typed beside a list marker must never inherit the marker tag.
+    func textView(_ textView: NSTextView, shouldChangeTypingAttributes oldTypingAttributes: [String: Any],
+                  toAttributes newTypingAttributes: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        AttributedBridge.typingAttributes(newTypingAttributes)
+    }
 }
