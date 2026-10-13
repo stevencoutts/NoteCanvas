@@ -111,7 +111,7 @@ final class ObjectView: NSView {
     var onDragBegin: (() -> Void)?
     var onMove: ((Double, Double) -> Void)?
     var onDragEnd: (() -> Void)?
-    var isSelectedObject = false { didSet { updateBorder() } }
+    var isSelectedObject = false { didSet { updateChrome() } }
     override var isFlipped: Bool { true }
 
     init(id: UUID, content: ObjectContentView) {
@@ -119,6 +119,8 @@ final class ObjectView: NSView {
         self.content = content
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.cornerRadius = 8
+        handle.fill = NSColor.labelColor.withAlphaComponent(0.03)
         addSubview(content)
         addSubview(handle)
         handle.onBegin = { [weak self] in self?.onDragBegin?() }
@@ -127,9 +129,11 @@ final class ObjectView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private func updateBorder() {
+    private func updateChrome() {
         layer?.borderWidth = isSelectedObject ? 1 : 0
-        layer?.borderColor = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.75).cgColor
+        handle.fill = NSColor.labelColor.withAlphaComponent(isSelectedObject ? 0.10 : 0.03)
+        handle.needsDisplay = true
     }
 
     override func layout() {

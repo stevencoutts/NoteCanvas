@@ -8,6 +8,8 @@ final class PageView: NSView {
     var assets: (String) -> Data? = { _ in nil }
     private var views: [UUID: ContainerView] = [:]
     private var objectViews: [UUID: ObjectView] = [:]
+    private var contentExtent = NSSize.zero
+    private var clipObserver: NSObjectProtocol?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }   // holds keyboard focus while a box is selected as an object
@@ -17,6 +19,22 @@ final class PageView: NSView {
         appearance = NSAppearance(named: .aqua)     // the page is always light; text defaults to black
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    deinit {
+        if let clipObserver { NotificationCenter.default.removeObserver(clipObserver) }
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if let clipObserver { NotificationCenter.default.removeObserver(clipObserver); self.clipObserver = nil }
+        guard let clip = superview else { return }
+        clip.postsBoundsChangedNotifications = true
+        clipObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
+            self?.fitVisibleCanvas()
+        }
+        fitVisibleCanvas()
+    }
 
     override func draw(_ dirtyRect: NSRect) { NSColor.white.setFill(); dirtyRect.fill() }
     override func mouseDown(with event: NSEvent) { onBackgroundClick?(convert(event.locationInWindow, from: nil)) }
@@ -72,9 +90,18 @@ final class PageView: NSView {
             if let r = responder as? NSView { window?.makeFirstResponder(r) }
         }
 
-        let visible = enclosingScrollView?.contentSize ?? .zero
-        setFrameSize(NSSize(width: max(visible.width, extentX + 400), height: max(visible.height, extentY + 400)))
+        contentExtent = NSSize(width: extentX + 400, height: extentY + 400)
+        fitVisibleCanvas()
         needsDisplay = true
+    }
+
+    /// The page is at least as large as the visible sheet, and it grows when the window does.
+    private func fitVisibleCanvas() {
+        let visible = enclosingScrollView?.contentSize ?? .zero
+        let size = NSSize(width: max(visible.width, contentExtent.width),
+                          height: max(visible.height, contentExtent.height))
+        guard abs(bounds.width - size.width) > 0.5 || abs(bounds.height - size.height) > 0.5 else { return }
+        setFrameSize(size)
     }
 
     /// The container whose text view currently has keyboard focus.

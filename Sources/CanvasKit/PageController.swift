@@ -1,10 +1,13 @@
 import AppKit
 import PageModel
+import UniformTypeIdentifiers
 
 public final class PageController {
     public private(set) var page: Page
     /// Writes the page; returns false when the write failed.
     public var onPersist: ((Page) -> Bool)?
+    /// Stores pasted bytes in the notebook and returns the asset file name.
+    public var storeAsset: ((Data, String) -> String?)?
     public var view: NSView { pageView }
     public var hasSelectedObject: Bool { selected != nil }
 
@@ -227,11 +230,99 @@ public final class PageController {
         NSPasteboard.general.setData(data, forType: Self.pasteboardType)
     }
 
+    /// Image types only. A text copy can also offer a TIFF snapshot, and that must stay text.
+    private static let imagePasteTypes: [NSPasteboard.PasteboardType] = [
+        .png, .tiff,
+        NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+        NSPasteboard.PasteboardType(UTType.gif.identifier),
+        NSPasteboard.PasteboardType(UTType.bmp.identifier),
+    ]
+
+    /// True when the clipboard holds something this canvas should place as an object (not text to type).
+    public static func clipboardHasCanvasContent(_ pasteboard: NSPasteboard) -> Bool {
+        if pasteboard.data(forType: pasteboardType) != nil { return true }
+        if pasteboard.availableType(from: imagePasteTypes) != nil { return true }
+        return pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+
     public func paste() {
-        guard let data = NSPasteboard.general.data(forType: Self.pasteboardType),
-              let object = try? JSONDecoder().decode(PageObject.self, from: data) else { return }
-        let copy = object.duplicated(dx: 20, dy: 20)
-        selected = copy.id
-        commit { $0.add(copy) }
+        let pasteboard = NSPasteboard.general
+        if let data = pasteboard.data(forType: Self.pasteboardType),
+           let object = try? JSONDecoder().decode(PageObject.self, from: data) {
+            let copy = object.duplicated(dx: 20, dy: 20)
+            selected = copy.id
+            commit { $0.add(copy) }
+            return
+        }
+        var objects: [PageObject] = []
+        let origin = pasteOrigin()
+        var y = origin.y
+        func place(_ object: PageObject) {
+            var placed = object
+            placed.frame.x = origin.x
+            placed.frame.y = y
+            y += placed.frame.height + 16
+            objects.append(placed)
+        }
+        for image in pastedImages(pasteboard) {
+            guard let data = pngData(image), let name = storeAsset?(data, "png") else { continue }
+            let size = fitted(image.size)
+            place(.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name)))
+        }
+        if objects.isEmpty {
+            for url in pastedFileURLs(pasteboard) {
+                guard let data = try? Data(contentsOf: url), !data.isEmpty,
+                      let name = storeAsset?(data, url.pathExtension) else { continue }
+                let isImage = (UTType(filenameExtension: url.pathExtension) ?? .data).conforms(to: .image)
+                if isImage, let image = NSImage(data: data) {
+                    let size = fitted(image.size)
+                    place(.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name)))
+                } else {
+                    let display = url.lastPathComponent.isEmpty ? "Attachment" : url.lastPathComponent
+                    place(.attachment(AttachmentObject(id: UUID(), frame: Frame(x: 0, y: 0, width: 160, height: 64),
+                                                        asset: name, displayName: display)))
+                }
+            }
+        }
+        if objects.isEmpty, pageView.focused() == nil,
+           let text = pasteboard.string(forType: .string)?.replacingOccurrences(of: "\r\n", with: "\n"),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let paragraphs = text.split(separator: "\n", omittingEmptySubsequences: false).map {
+                Paragraph(runs: [Run(text: String($0), style: RunStyle())])
+            }
+            objects = [.text(TextContainer(id: UUID(), frame: Frame(x: origin.x, y: origin.y, width: 360, height: 0),
+                                            paragraphs: paragraphs))]
+        }
+        guard !objects.isEmpty else { return }
+        selected = objects.last?.id
+        commit { page in for object in objects { page.add(object) } }
+    }
+
+    private func pasteOrigin() -> (x: Double, y: Double) {
+        let visible = pageView.visibleRect
+        guard !visible.isEmpty else { return (48, 72) }
+        return (Double(visible.minX) + 32, Double(visible.minY) + 32)
+    }
+
+    private func pastedImages(_ pasteboard: NSPasteboard) -> [NSImage] {
+        guard pasteboard.availableType(from: Self.imagePasteTypes) != nil else { return [] }
+        return pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] ?? []
+    }
+
+    private func pastedFileURLs(_ pasteboard: NSPasteboard) -> [URL] {
+        pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+
+    private func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// Longest side at most 480 points, keeping the image's aspect ratio.
+    private func fitted(_ size: NSSize) -> NSSize {
+        let w = size.width, h = size.height
+        guard w > 1, h > 1 else { return NSSize(width: 240, height: 180) }
+        let scale = min(1, 480 / max(w, h))
+        return NSSize(width: (w * scale).rounded(), height: (h * scale).rounded())
     }
 }

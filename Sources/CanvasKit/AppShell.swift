@@ -168,6 +168,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let page = try pkg.loadPage(id)
             let c = PageController(page: page, assets: { [weak self] name in self?.package?.loadAsset(name) })
             c.onPersist = { [weak self] page in self?.save(page) ?? false }
+            c.storeAsset = { [weak self] data, ext in
+                guard let self, let pkg = self.package else { return nil }
+                do { return try pkg.addAsset(data: data, ext: ext) } catch { self.show(error); return nil }
+            }
             controller = c
             canvasScroll.documentView = c.view
             c.view.frame.size = canvasScroll.contentSize
@@ -250,6 +254,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = NSTextField(labelWithString: pages[row].title)
         cell.lineBreakMode = .byTruncatingTail
+        cell.font = .systemFont(ofSize: 13)
+        cell.textColor = .labelColor
         return cell
     }
 
@@ -415,7 +421,13 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if editingText { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: s) } else { controller?.copySelected() }
     }
     @objc func pasteAction(_ s: Any?) {
-        if editingText { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: s) } else { controller?.paste() }
+        let pasteboard = NSPasteboard.general
+        if editingText, !PageController.clipboardHasCanvasContent(pasteboard) {
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: s)
+        } else {
+            if PageController.clipboardHasCanvasContent(pasteboard) { commitEditing() }
+            controller?.paste()
+        }
     }
     @objc func deleteObject(_ s: Any?) { controller?.deleteSelected() }
 
@@ -435,41 +447,68 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     // MARK: UI construction
 
-    private func button(_ title: String, _ action: Selector, tip: String) -> NSButton {
-        let b = NSButton(title: title, target: self, action: action)
-        b.bezelStyle = .texturedRounded
-        b.refusesFirstResponder = true         // clicking must not steal focus from the text view
+    /// A quiet symbol button. It must not take keyboard focus away from the text being edited.
+    private func symbolButton(_ symbol: String, _ action: Selector, tip: String) -> NSButton {
+        let b = NSButton()
+        b.bezelStyle = .accessoryBarAction
+        b.imagePosition = .imageOnly
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        b.target = self
+        b.action = action
+        b.refusesFirstResponder = true
         b.toolTip = tip
         return b
     }
 
     private func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                          backing: .buffered, defer: false)
         window.title = "NoteCanvas"
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.isReleasedWhenClosed = false          // the shell owns the window; closing it must not free it
+        window.contentMinSize = NSSize(width: 760, height: 480)
         window.delegate = self
         window.center()
+
+        let glass = NSVisualEffectView()
+        glass.material = .sidebar
+        glass.blendingMode = .behindWindow
+        glass.state = .followsWindowActiveState
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("title"))
         table.addTableColumn(column)
         table.headerView = nil
+        table.style = .sourceList
+        table.backgroundColor = .clear
+        table.rowHeight = 26
         table.dataSource = self
         table.delegate = self
         let sideScroll = NSScrollView()
         sideScroll.documentView = table
         sideScroll.hasVerticalScroller = true
-        let add = button("+", #selector(addPage(_:)), tip: "Add page")
-        let remove = button("−", #selector(removePage(_:)), tip: "Delete page")
+        sideScroll.drawsBackground = false
+        sideScroll.borderType = .noBorder
+        sideScroll.scrollerStyle = .overlay
+        let add = symbolButton("plus", #selector(addPage(_:)), tip: "Add page")
+        let remove = symbolButton("minus", #selector(removePage(_:)), tip: "Delete page")
         sectionPopup.target = self
         sectionPopup.action = #selector(pickSection(_:))
         sectionPopup.refusesFirstResponder = true
+        sectionPopup.bezelStyle = .recessed
+        sectionPopup.font = .systemFont(ofSize: 13, weight: .medium)
         let sideButtons = NSStackView(views: [add, remove])
+        sideButtons.spacing = 2
         let side = NSStackView(views: [sectionPopup, sideScroll, sideButtons])
         side.orientation = .vertical
         side.alignment = .leading
+        side.spacing = 6
         sectionPopup.widthAnchor.constraint(equalTo: side.widthAnchor).isActive = true
-        side.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        side.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         headingPopup.addItems(withTitles: ["Body", "Heading 1", "Heading 2", "Heading 3"])
         headingPopup.target = self; headingPopup.action = #selector(pickHeading(_:)); headingPopup.refusesFirstResponder = true
@@ -480,34 +519,105 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         colorWell.target = self; colorWell.action = #selector(pickColor(_:))
 
         let bar = NSStackView(views: [
-            button("B", #selector(bold(_:)), tip: "Bold"), button("I", #selector(italic(_:)), tip: "Italic"),
-            button("U", #selector(underline(_:)), tip: "Underline"), button("S", #selector(strike(_:)), tip: "Strikethrough"),
+            symbolButton("bold", #selector(bold(_:)), tip: "Bold"),
+            symbolButton("italic", #selector(italic(_:)), tip: "Italic"),
+            symbolButton("underline", #selector(underline(_:)), tip: "Underline"),
+            symbolButton("strikethrough", #selector(strike(_:)), tip: "Strikethrough"),
             sizePopup, colorWell, headingPopup,
-            button("•", #selector(bullet(_:)), tip: "Bullets"), button("1.", #selector(numbered(_:)), tip: "Numbering"),
-            button("⇤", #selector(alignLeft(_:)), tip: "Align left"), button("↔︎", #selector(alignCenter(_:)), tip: "Center"),
-            button("⇥", #selector(alignRight(_:)), tip: "Align right"),
-            button("→", #selector(indentMore(_:)), tip: "Indent"), button("←", #selector(indentLess(_:)), tip: "Outdent"),
+            symbolButton("list.bullet", #selector(bullet(_:)), tip: "Bullets"),
+            symbolButton("list.number", #selector(numbered(_:)), tip: "Numbering"),
+            symbolButton("text.alignleft", #selector(alignLeft(_:)), tip: "Align left"),
+            symbolButton("text.aligncenter", #selector(alignCenter(_:)), tip: "Center"),
+            symbolButton("text.alignright", #selector(alignRight(_:)), tip: "Align right"),
+            symbolButton("increase.indent", #selector(indentMore(_:)), tip: "Indent"),
+            symbolButton("decrease.indent", #selector(indentLess(_:)), tip: "Outdent"),
         ])
-        bar.spacing = 6
+        bar.spacing = 2
 
         titleField.placeholderString = "Page title"
-        titleField.font = .systemFont(ofSize: 20, weight: .semibold)
+        titleField.font = .systemFont(ofSize: 22, weight: .semibold)
+        titleField.isBezeled = false
+        titleField.isBordered = false
+        titleField.drawsBackground = false
+        titleField.focusRingType = .none
         titleField.delegate = self
         canvasScroll.hasVerticalScroller = true
         canvasScroll.hasHorizontalScroller = true
+        canvasScroll.drawsBackground = false
+        canvasScroll.borderType = .noBorder
+        canvasScroll.scrollerStyle = .overlay
 
-        let right = NSStackView(views: [bar, titleField, canvasScroll])
+        let paperStack = NSStackView(views: [titleField, canvasScroll])
+        paperStack.orientation = .vertical
+        paperStack.alignment = .leading
+        paperStack.spacing = 6
+        paperStack.edgeInsets = NSEdgeInsets(top: 14, left: 18, bottom: 12, right: 12)
+        let titleWidth = titleField.widthAnchor.constraint(equalTo: paperStack.widthAnchor, constant: -30)
+        let canvasWidth = canvasScroll.widthAnchor.constraint(equalTo: paperStack.widthAnchor, constant: -30)
+        titleWidth.priority = NSLayoutConstraint.Priority(999)
+        canvasWidth.priority = NSLayoutConstraint.Priority(999)
+        titleWidth.isActive = true
+        canvasWidth.isActive = true
+        canvasScroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        canvasScroll.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        canvasScroll.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        canvasScroll.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
+
+        let paper = NSView()
+        paper.wantsLayer = true
+        paper.appearance = NSAppearance(named: .aqua)   // the sheet stays light so text and images stay readable
+        paper.layer?.backgroundColor = NSColor.white.cgColor
+        paper.layer?.cornerRadius = 16
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow.shadowOffset = NSSize(width: 0, height: -4)
+        shadow.shadowBlurRadius = 18
+        paper.shadow = shadow
+        paperStack.translatesAutoresizingMaskIntoConstraints = false
+        paper.addSubview(paperStack)
+        NSLayoutConstraint.activate([
+            paperStack.topAnchor.constraint(equalTo: paper.topAnchor),
+            paperStack.leadingAnchor.constraint(equalTo: paper.leadingAnchor),
+            paperStack.trailingAnchor.constraint(equalTo: paper.trailingAnchor),
+            paperStack.bottomAnchor.constraint(equalTo: paper.bottomAnchor),
+        ])
+
+        let right = NSStackView(views: [bar, paper])
         right.orientation = .vertical
         right.alignment = .leading
-        titleField.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
-        canvasScroll.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
-        canvasScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        right.spacing = 10
+        paper.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        paper.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        paper.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let paperWidth = paper.widthAnchor.constraint(equalTo: right.widthAnchor)
+        paperWidth.priority = NSLayoutConstraint.Priority(999)
+        paperWidth.isActive = true
+        let barWidth = bar.widthAnchor.constraint(equalTo: right.widthAnchor)
+        barWidth.priority = NSLayoutConstraint.Priority(999)
+        barWidth.isActive = true
 
         let root = NSStackView(views: [side, right])
         root.orientation = .horizontal
-        root.spacing = 8
-        root.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        window.contentView = root
+        root.spacing = 14
+        root.translatesAutoresizingMaskIntoConstraints = false
+        side.setContentHuggingPriority(.required, for: .horizontal)
+        side.setContentCompressionResistancePriority(.required, for: .horizontal)
+        right.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        right.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        side.heightAnchor.constraint(equalTo: root.heightAnchor).isActive = true
+        right.heightAnchor.constraint(equalTo: root.heightAnchor).isActive = true
+        // Sidebar is 220 wide and the gap is 14; the sheet takes every remaining point as the window changes size.
+        let rightWidth = right.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -234)
+        rightWidth.priority = NSLayoutConstraint.Priority(999)
+        rightWidth.isActive = true
+        glass.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.topAnchor.constraint(equalTo: glass.safeAreaLayoutGuide.topAnchor, constant: 6),
+            root.leadingAnchor.constraint(equalTo: glass.leadingAnchor, constant: 12),
+            root.trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: -12),
+            root.bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: -12),
+        ])
+        window.contentView = glass
         window.makeKeyAndOrderFront(nil)
     }
 

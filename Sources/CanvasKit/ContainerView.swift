@@ -48,7 +48,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
         set { textView.onFocus = newValue }
     }
 
-    var isSelectedObject = false { didSet { needsDisplay = true } }
+    var isSelectedObject = false { didSet { updateChrome() } }
     var isEditing: Bool { window?.firstResponder === textView }
     override var isFlipped: Bool { true }
 
@@ -68,6 +68,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
         textView.delegate = self
         grip.cursor = .resizeLeftRight
         grip.fill = .clear
+        handle.fill = NSColor.labelColor.withAlphaComponent(0.03)
         handle.onBegin = { [weak self] in self?.onDragBegin?() }
         handle.onDelta = { [weak self] dx, dy in self?.onMove?(dx, dy) }
         handle.onEnd = { [weak self] in self?.onDragEnd?() }
@@ -91,13 +92,20 @@ final class ContainerView: NSView, NSTextViewDelegate {
 
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(textView) }
 
+    /// The drag strip stays almost invisible until the box is selected or being edited.
+    private func updateChrome() {
+        let active = isSelectedObject || isEditing
+        handle.fill = NSColor.labelColor.withAlphaComponent(active ? 0.10 : 0.03)
+        handle.needsDisplay = true
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        if isSelectedObject || isEditing {
-            NSColor.systemBlue.withAlphaComponent(0.6).setStroke()
-            let path = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
-            path.lineWidth = 1
-            path.stroke()
-        }
+        guard isSelectedObject || isEditing else { return }
+        NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
+        path.lineWidth = 1
+        path.stroke()
     }
 
     /// Re-renders the text, carrying the selection over as (paragraph, body offset) so a marker that
@@ -117,8 +125,8 @@ final class ContainerView: NSView, NSTextViewDelegate {
 
     // MARK: NSTextViewDelegate
     func textDidChange(_ notification: Notification) { onTextChange?(textView.attributedString()) }
-    func textDidEndEditing(_ notification: Notification) { needsDisplay = true; onEndEditing?() }
-    func textDidBeginEditing(_ notification: Notification) { needsDisplay = true }
+    func textDidEndEditing(_ notification: Notification) { updateChrome(); onEndEditing?() }
+    func textDidBeginEditing(_ notification: Notification) { updateChrome() }
     /// Text typed beside a list marker must never inherit the marker tag.
     func textView(_ textView: NSTextView, shouldChangeTypingAttributes oldTypingAttributes: [String: Any],
                   toAttributes newTypingAttributes: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
