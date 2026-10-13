@@ -122,3 +122,149 @@ func fuzz(_ label: String, _ data: Data, step: Int = 1, _ body: (Data) throws ->
         pos += step
     }
 }
+
+// ---- Full-file fixtures: object spaces, revisions, global ID tables and objects ----
+
+struct FxProp { var pid: UInt32; var data: [UInt8] = [] }
+
+/// An object declaration. `oids` are the CompactIDs consumed (in property order) by the object's object-ID
+/// properties; `osids` likewise for object-space-ID properties.
+struct FxObject {
+    var oid: UInt32
+    var jcid: UInt32
+    var props: [FxProp] = []
+    var oids: [UInt32] = []
+    var osids: [UInt32] = []
+}
+
+struct FxRevision {
+    var rid: (guid: String, n: UInt32)
+    var dependent: (guid: String, n: UInt32)? = nil
+    var role: UInt32 = 1
+    var idTable: [(index: UInt32, guid: String)]
+    var roots: [(role: UInt32, guid: String, n: UInt32)]
+    var objects: [FxObject]
+    var extraNodes: [FNode] = []     // appended inside the revision's node list (e.g. file data declarations)
+}
+
+/// A CompactID: the global-ID-table index in the high 24 bits, `n` in the low 8.
+func compact(_ index: UInt32, _ n: UInt8) -> UInt32 { index << 8 | UInt32(n) }
+
+func extGUID(_ guid: String, _ n: UInt32) -> [UInt8] { guidBytes(guid) + le32(n) }
+
+/// A PropertySet body: count, PropertyIDs, then the data of each property in order.
+func setBytes(_ props: [FxProp]) -> [UInt8] {
+    var b = ByteBuilder()
+    b.u16(UInt16(props.count))
+    for p in props { b.u32(p.pid) }
+    for p in props { b.append(p.data) }
+    return b.bytes
+}
+
+/// An ObjectSpaceObjectPropSet: object stream, optional object-space stream, the property set, padded to 8 bytes.
+func objectBlob(_ o: FxObject) -> [UInt8] {
+    var b = ByteBuilder()
+    b.u32(UInt32(o.oids.count) | (o.osids.isEmpty ? UInt32(1) << 31 : 0))
+    for id in o.oids { b.u32(id) }
+    if !o.osids.isEmpty {
+        b.u32(UInt32(o.osids.count))
+        for id in o.osids { b.u32(id) }
+    }
+    b.append(setBytes(o.props))
+    while b.count % 8 != 0 { b.u8(0) }
+    return b.bytes
+}
+
+/// Lays out a whole file: a reserved header and transaction log, then lists and blobs appended leaf-first.
+final class FxFile {
+    var b = ByteBuilder()
+    var commits: [(UInt32, UInt32)] = []
+    var nextListID: UInt32 = 0x10
+    init() { b.zeros(1024 + 4096) }
+
+    func list(_ nodes: [FNode]) -> (stp: UInt64, cb: UInt32) {
+        let id = nextListID; nextListID += 1
+        let need = nodes.reduce(0) { $0 + $1.encoded.count } + 4 + 40
+        let size = (max(need, 256) + 7) / 8 * 8
+        let stp = b.count
+        b.append(fragment(listID: id, nodes: nodes, size: size, terminator: true))
+        commits.append((id, UInt32(nodes.count)))
+        return (UInt64(stp), UInt32(size))
+    }
+
+    func blob(_ bytes: [UInt8]) -> (stp: UInt64, cb: UInt32) {
+        let s = b.count
+        b.append(bytes)
+        return (UInt64(s), UInt32(bytes.count))
+    }
+
+    func finish(root: (stp: UInt64, cb: UInt32)) -> Data {
+        var out = b.bytes
+        let log = transactionLog(entries: commits.map { (src: $0.0, sw: $0.1) } + [(src: 1, sw: 0)], size: 4096)
+        out.replaceSubrange(1024..<(1024 + 4096), with: log)
+        out.replaceSubrange(0..<1024, with: oneHeader(transactions: 1, log: (1024, 4096), root: root))
+        return Data(out)
+    }
+}
+
+/// A node holding a FileNodeChunkReference (8-byte stp, 4-byte cb) followed by `extra` bytes.
+func refNode(_ id: UInt16, base: Int, ref: (stp: UInt64, cb: UInt32), extra: [UInt8] = []) -> FNode {
+    var b = ByteBuilder(); b.u64(ref.stp); b.u32(ref.cb); b.append(extra)
+    return FNode(id: id, fnd: b.bytes, base: base, stpFormat: 0, cbFormat: 0)
+}
+
+/// ObjectDeclaration2RefCountFND: reference to the property data, then oid, jcid, flags, reference count.
+func declNode(blob: (stp: UInt64, cb: UInt32), oid: UInt32, jcid: UInt32) -> FNode {
+    refNode(0xA4, base: 1, ref: blob, extra: le32(oid) + le32(jcid) + [0, 1])
+}
+
+/// A StringInStorageBuffer: character count then UTF-16 characters.
+func storageString(_ s: String) -> [UInt8] { le32(UInt32(s.utf16.count)) + utf16le(s) }
+
+/// ObjectDeclarationFileData3RefCountFND (a file data object): oid, jcid, count, reference string, extension string.
+func fileDataDeclNode(oid: UInt32, jcid: UInt32, target: String, ext: String) -> FNode {
+    FNode(id: 0x72, fnd: le32(oid) + le32(jcid) + [1] + storageString(target) + storageString(ext))
+}
+
+let fileDataHeaderGUID = "{BDE316E7-2665-4511-A4C4-8D4D0B7A9EAC}"
+let fileDataFooterGUID = "{71FBA722-0F79-4A0B-BB13-899256426B24}"
+
+/// A FileDataStoreObject: header GUID, length, 4+8 reserved bytes, the data, padding to 8, footer GUID.
+func fileDataObject(_ data: [UInt8]) -> [UInt8] {
+    var b = ByteBuilder()
+    b.append(guidBytes(fileDataHeaderGUID)); b.u64(UInt64(data.count)); b.u32(0); b.u64(0)
+    b.append(data)
+    while b.count % 8 != 0 { b.u8(0) }
+    b.append(guidBytes(fileDataFooterGUID))
+    return b.bytes
+}
+
+/// Builds one object space with the given revisions. `rootExtra` nodes (for example a file data store reference)
+/// are appended to the root list.
+func buildStore(_ file: FxFile, space: (guid: String, n: UInt32), revisions: [FxRevision], rootExtra: [FNode] = []) -> Data {
+    var revisionNodes: [FNode] = [FNode(id: 0x14, fnd: [UInt8](repeating: 0, count: 24))]
+    for (i, rev) in revisions.enumerated() {
+        let groupID = "{99999999-9999-9999-9999-99999999999\(i)}"
+        var groupNodes: [FNode] = [FNode(id: 0xB4, fnd: extGUID(groupID, 1))]
+        for obj in rev.objects { groupNodes.append(declNode(blob: file.blob(objectBlob(obj)), oid: obj.oid, jcid: obj.jcid)) }
+        groupNodes += rev.extraNodes
+        groupNodes.append(FNode(id: 0xB8))
+        let groupList = file.list(groupNodes)
+
+        let dep = rev.dependent.map { extGUID($0.guid, $0.n) } ?? [UInt8](repeating: 0, count: 20)
+        revisionNodes.append(FNode(id: 0x1F, fnd: extGUID(rev.rid.guid, rev.rid.n) + dep + le32(rev.role) + le16(0)
+                                   + [UInt8](repeating: 0, count: 20)))
+        revisionNodes.append(FNode(id: 0x22))
+        for e in rev.idTable { revisionNodes.append(FNode(id: 0x24, fnd: le32(e.index) + guidBytes(e.guid))) }
+        revisionNodes.append(FNode(id: 0x28))
+        for r in rev.roots { revisionNodes.append(FNode(id: 0x5A, fnd: extGUID(r.guid, r.n) + le32(r.role))) }
+        revisionNodes.append(refNode(0xB0, base: 2, ref: groupList, extra: extGUID(groupID, 1)))
+        revisionNodes.append(FNode(id: 0x1C))
+    }
+    let revisionList = file.list(revisionNodes)
+    let spaceList = file.list([FNode(id: 0x0C, fnd: extGUID(space.guid, space.n)),
+                               refNode(0x10, base: 2, ref: revisionList)])
+    let rootList = file.list([FNode(id: 0x04, fnd: extGUID(space.guid, space.n)),
+                              refNode(0x08, base: 2, ref: spaceList, extra: extGUID(space.guid, space.n))] + rootExtra)
+    return file.finish(root: rootList)
+}

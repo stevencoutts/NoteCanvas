@@ -1,3 +1,4 @@
 .build/
 .swiftpm/
 findings.md
+.DS_Store

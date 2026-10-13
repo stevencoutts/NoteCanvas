@@ -17,10 +17,18 @@ public struct GUID: Hashable, Sendable {
     /// Parses "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" (braces and dashes optional) into file byte order.
     public init?(string: String) {
         let s = string.filter { $0 != "{" && $0 != "}" && $0 != "-" }
-        guard s.count == 32, s.allSatisfy(\.isHexDigit) else { return nil }
-        let chars = Array(s)
+        // Only ASCII hex digits count: Character.isHexDigit also accepts fullwidth forms that UInt8(radix:) rejects.
+        let digits = s.unicodeScalars.compactMap { u -> UInt8? in
+            switch u.value {
+            case 0x30...0x39: return UInt8(u.value - 0x30)
+            case 0x41...0x46: return UInt8(u.value - 0x41 + 10)
+            case 0x61...0x66: return UInt8(u.value - 0x61 + 10)
+            default: return nil
+            }
+        }
+        guard digits.count == 32, s.unicodeScalars.count == 32 else { return nil }
         var b: [UInt8] = []
-        for i in 0..<16 { b.append(UInt8(String(chars[2 * i...2 * i + 1]), radix: 16)!) }
+        for i in 0..<16 { b.append(digits[2 * i] << 4 | digits[2 * i + 1]) }
         let f = Array(b[0..<4].reversed()) + Array(b[4..<6].reversed()) + Array(b[6..<8].reversed()) + Array(b[8..<16])
         var h: UInt64 = 0, l: UInt64 = 0
         for i in 0..<8 { h = h << 8 | UInt64(f[i]) }
