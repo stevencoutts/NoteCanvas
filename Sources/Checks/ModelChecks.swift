@@ -97,7 +97,33 @@ func pageOpChecks() {
     checkEqual(page.objects.count, 2, "delete removes the object")
 }
 
+func historyChecks() {
+    var h = History<Int>()
+    checkEqual(h.undo(current: 5), nil, "undo with nothing recorded is a no-op")
+    check(!h.canUndo && !h.canRedo, "fresh history cannot undo or redo")
+
+    h.record(1); h.record(2)                       // states 1, 2 existed before current 3
+    checkEqual(h.undo(current: 3), 2, "undo returns most recent snapshot")
+    checkEqual(h.undo(current: 2), 1, "undo again")
+    checkEqual(h.undo(current: 1), nil, "undo past the start is a no-op")
+    checkEqual(h.redo(current: 1), 2, "redo returns what was undone")
+    checkEqual(h.redo(current: 2), 3, "redo again")
+    checkEqual(h.redo(current: 3), nil, "redo past the end is a no-op")
+
+    _ = h.undo(current: 3)
+    h.record(9)
+    check(!h.canRedo, "a new edit clears redo")
+
+    var capped = History<Int>(limit: 3)
+    for i in 0..<10 { capped.record(i) }
+    var seen: [Int] = []
+    var cur = 10
+    while let prev = capped.undo(current: cur) { seen.append(prev); cur = prev }
+    checkEqual(seen, [9, 8, 7], "history keeps only the newest `limit` snapshots")
+}
+
 func modelChecks() {
     textTypeChecks()
     pageOpChecks()
+    historyChecks()
 }
