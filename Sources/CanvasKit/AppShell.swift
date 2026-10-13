@@ -183,7 +183,12 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
 
     /// Backspace is Delete Object's key equivalent; never let it fire while a text view has focus (it would eat the keystroke).
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(deleteObject(_:)), editingText, NSApp.currentEvent?.type == .keyDown { return false }
+        guard item.action == #selector(deleteObject(_:)) else { return true }
+        guard controller?.hasSelectedObject == true else { return false }
+        if NSApp.currentEvent?.type == .keyDown {
+            let r = window?.firstResponder
+            return !(r is NSTextView) && !(r is NSTableView)
+        }
         return true
     }
     @objc func bringToFront(_ s: Any?) { controller?.bringToFront() }
@@ -285,7 +290,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSTableViewDataSou
         edit.addItem(.separator())
         item("Copy", #selector(copyAction(_:)), "c", in: edit)
         item("Paste", #selector(pasteAction(_:)), "v", in: edit)
-        item("Delete Object", #selector(deleteObject(_:)), "\u{8}", mods: [], in: edit)
+        item("Delete Object", #selector(deleteObject(_:)), "\u{7f}", mods: [], in: edit)
         let arrange = submenu("Arrange")
         item("Bring to Front", #selector(bringToFront(_:)), "]", in: arrange)
         item("Send to Back", #selector(sendToBack(_:)), "[", in: arrange)
