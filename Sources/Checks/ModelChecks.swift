@@ -36,6 +36,68 @@ func textTypeChecks() {
     checkEqual(r.heading, 0, "heading clamps low")
 }
 
+struct FixedLineMeasurer: TextMeasuring {
+    func height(of paragraphs: [Paragraph], width: Double) -> Double { Double(paragraphs.count) * 20 }
+}
+
+func pageOpChecks() {
+    var page = Page(id: UUID(), title: "t", objects: [])
+    let a = box(10, 20, 200, lines: 3)
+    let b = box(50, 60, 100)
+    page.add(.text(a)); page.add(.text(b))
+    checkEqual(page.objects.map(\.id), [a.id, b.id], "add keeps insertion order as z-order")
+
+    page.bringToFront(a.id)
+    checkEqual(page.objects.map(\.id), [b.id, a.id], "bringToFront moves to end")
+    page.sendToBack(a.id)
+    checkEqual(page.objects.map(\.id), [a.id, b.id], "sendToBack moves to start")
+
+    page.move(a.id, dx: -100, dy: -100)
+    guard case .text(let moved) = page.objects[0] else { check(false, "first object is text"); return }
+    checkEqual(moved.frame.x, -90, "move allows negative x")
+    checkEqual(moved.frame.y, -80, "move allows negative y")
+
+    page.resize(a.id, width: 5)
+    page.updateText(a.id) { _ in }
+    guard case .text(let narrow) = page.objects[0] else { return }
+    checkEqual(narrow.frame.width, Page.minContainerWidth, "resize below minimum clamps")
+    page.resize(a.id, width: -30)
+    guard case .text(let neg) = page.objects[0] else { return }
+    checkEqual(neg.frame.width, Page.minContainerWidth, "negative width clamps")
+    page.resize(a.id, width: 300)
+    guard case .text(let wide) = page.objects[0] else { return }
+    checkEqual(wide.frame.width, 300, "resize accepts a normal width")
+
+    let before = page
+    page.move(UUID(), dx: 1, dy: 1)
+    page.resize(UUID(), width: 10)
+    page.bringToFront(UUID())
+    page.delete(UUID())
+    checkEqual(page, before, "operations on an unknown id are no-ops")
+
+    page.relayout(using: FixedLineMeasurer())
+    guard case .text(let laid) = page.objects[0] else { return }
+    checkEqual(laid.frame.height, 60, "height derives from content (3 lines x 20)")
+
+    let empty = TextContainer(id: UUID(), frame: Frame(x: 0, y: 0, width: 100, height: 0), paragraphs: [])
+    page.add(.text(empty))
+    page.relayout(using: FixedLineMeasurer())
+    guard case .text(let e) = page.objects[2] else { return }
+    checkEqual(e.frame.height, Page.minContainerHeight, "empty container keeps a minimum height")
+
+    page.editParagraphs(a.id, in: 0...1) { $0.indent = 99; $0.heading = 9 }
+    guard case .text(let edited) = page.objects[0] else { return }
+    checkEqual(edited.paragraphs[0].indent, Paragraph.maxIndent, "editParagraphs clamps indent")
+    checkEqual(edited.paragraphs[1].heading, 3, "editParagraphs clamps heading")
+    checkEqual(edited.paragraphs[2].indent, 0, "paragraph outside range untouched")
+    page.editParagraphs(a.id, in: 5...9) { $0.indent = 1 }      // out of range: no crash
+    page.editParagraphs(empty.id, in: 0...0) { $0.indent = 1 }  // no paragraphs: no crash
+
+    page.delete(a.id)
+    checkEqual(page.objects.count, 2, "delete removes the object")
+}
+
 func modelChecks() {
     textTypeChecks()
+    pageOpChecks()
 }
