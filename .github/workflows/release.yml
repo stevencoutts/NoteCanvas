@@ -16,6 +16,8 @@ jobs:
     runs-on: macos-26
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Swift
@@ -59,3 +61,47 @@ jobs:
           else
             gh release create "$TAG" "$zip" --title "NoteCanvas $TAG" --generate-notes --verify-tag
           fi
+
+  # stevec.couttsnet.com serves /downloads/ from /home/stevec/downloads on hetzner.
+  # This job runs on that host, so it does not need an SSH key in GitHub.
+  site-downloads:
+    needs: release
+    runs-on: [self-hosted, hetzner]
+    permissions:
+      contents: read
+    steps:
+      - name: Copy zip into site downloads
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="NoteCanvas-${VERSION}.zip"
+          dest="${HOME}/downloads/${name}"
+          tmp="$(mktemp "${HOME}/downloads/.${name}.XXXXXX")"
+          trap 'rm -f "$tmp"' EXIT
+          asset_id=""
+          for _ in 1 2 3 4 5 6; do
+            asset_id="$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+              | python3 -c 'import json,sys; name=sys.argv[1]; rel=json.load(sys.stdin); print(next((a["id"] for a in rel.get("assets",[]) if a["name"]==name), ""))' "$name")"
+            if [ -n "$asset_id" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$asset_id" ]; then
+            echo "Release asset ${name} was not found." >&2
+            exit 1
+          fi
+          curl -fL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            -o "$tmp" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+          python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).testzip()' "$tmp"
+          chmod 644 "$tmp"
+          mv "$tmp" "$dest"
+          trap - EXIT
