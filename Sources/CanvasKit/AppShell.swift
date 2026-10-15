@@ -59,8 +59,29 @@ private final class NavCell: NSTableCellView {
     }
 }
 
+/// Escape closes the panel. A panel does not become main, so dismissing it leaves the notebook window in place.
+private final class AboutPanel: NSPanel {
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { close() } else { super.keyDown(with: event) }
+    }
+
+    override func cancelOperation(_ sender: Any?) { close() }
+}
+
+/// First responder for the About panel so Escape is handled when the content view is key.
+private final class AboutKeyView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { window?.close() } else { super.keyDown(with: event) }
+    }
+
+    override func cancelOperation(_ sender: Any?) { window?.close() }
+}
+
 public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var window: NSWindow!
+    private var aboutWindow: NSPanel?
     private var package: NotebookPackage?
     private var controller: PageController?
     private var pages: [PageRef] = []
@@ -114,10 +135,22 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     @objc func checkForUpdates(_ sender: Any?) { AppUpdate.check(interactive: true) }
 
+    /// A small stationery panel. `orderFrontStandardAboutPanel` is empty under `swift run`, which has no bundle credits.
+    @objc func showAbout(_ sender: Any?) {
+        let panel = aboutWindow ?? makeAboutWindow()
+        aboutWindow = panel
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(panel.contentView)
+    }
+
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         saveOrDiscard("Quit") ? .terminateNow : .terminateCancel
     }
-    public func windowShouldClose(_ sender: NSWindow) -> Bool { saveOrDiscard("Close") }
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard saveOrDiscard("Close") else { return false }
+        aboutWindow?.close()
+        return true
+    }
     public func applicationWillTerminate(_ notification: Notification) { commitEditing(); _ = flushController() }
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
@@ -1025,6 +1058,134 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// `CFBundleShortVersionString` once this process is a bundled .app. `swift run` has no version.
+    private static func aboutVersionLabel() -> String {
+        guard Bundle.main.bundleURL.pathExtension.lowercased() == "app",
+              let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return "Development"
+        }
+        let version = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return version.isEmpty ? "Development" : "Version \(version)"
+    }
+
+    private func aboutLine(_ text: String, size: CGFloat, weight: NSFont.Weight, alpha: CGFloat) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = Palette.ink.withAlphaComponent(alpha)
+        label.alignment = .center
+        label.maximumNumberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        label.isSelectable = false
+        label.refusesFirstResponder = true
+        return label
+    }
+
+    /// Icon is `NSApp.applicationIconImage`, which `main.swift` sets from `AppIcon.image()`.
+    private func makeAboutWindow() -> NSPanel {
+        let icon = NSImageView()
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.imageFrameStyle = .none
+        icon.image = NSApp.applicationIconImage ?? NSImage(named: "AppIcon")
+        icon.setAccessibilityLabel("NoteCanvas")
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 72),
+            icon.heightAnchor.constraint(equalToConstant: 72),
+        ])
+
+        let name = aboutLine("NoteCanvas", size: 18, weight: .semibold, alpha: 1)
+        let version = aboutLine(Self.aboutVersionLabel(), size: 12, weight: .medium, alpha: 0.72)
+        let blurb = aboutLine("A free-form note canvas", size: 13, weight: .regular, alpha: 1)
+        let copyright = aboutLine("Copyright © 2026 Steven Coutts", size: 11, weight: .regular, alpha: 0.62)
+
+        let stack = NSStackView(views: [icon, name, version, blurb, copyright])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 2
+        stack.setCustomSpacing(10, after: icon)
+        stack.setCustomSpacing(10, after: version)
+        stack.setCustomSpacing(8, after: blurb)
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 24, bottom: 16, right: 24)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let card = NSView()
+        card.wantsLayer = true
+        card.appearance = NSAppearance(named: .aqua)
+        card.layer?.backgroundColor = Palette.paper.cgColor
+        card.layer?.cornerRadius = 16
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = Palette.hairline.cgColor
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor(srgbRed: 0.35, green: 0.28, blue: 0.20, alpha: 0.18)
+        shadow.shadowOffset = NSSize(width: 0, height: -3)
+        shadow.shadowBlurRadius = 12
+        card.shadow = shadow
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+
+        // fittingSize drops the stack's horizontal insets, so width is the text plus that padding.
+        let textWidth = [name, version, blurb, copyright].map(\.intrinsicContentSize.width).max() ?? 0
+        let cardSize = NSSize(
+            width: ceil(max(textWidth, 72) + stack.edgeInsets.left + stack.edgeInsets.right),
+            height: ceil(stack.fittingSize.height))
+        let margin: CGFloat = 16
+
+        let root = AboutKeyView()
+        root.wantsLayer = true
+        root.appearance = NSAppearance(named: .aqua)
+        root.layer?.backgroundColor = Palette.stone.cgColor
+        root.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: root.topAnchor, constant: margin),
+            card.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: margin),
+            card.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -margin),
+            card.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -margin),
+        ])
+
+        let panel = AboutPanel(
+            contentRect: NSRect(x: 0, y: 0, width: cardSize.width + margin * 2, height: cardSize.height + margin * 2),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false)
+        panel.title = "About NoteCanvas"
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.titlebarSeparatorStyle = .none
+        panel.isOpaque = true
+        panel.backgroundColor = Palette.stone
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.isMovableByWindowBackground = true
+        panel.isReleasedWhenClosed = false
+        panel.isRestorable = false
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.hidesOnDeactivate = false
+        panel.isExcludedFromWindowsMenu = true
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentView = root
+        panel.initialFirstResponder = root
+        panel.setContentSize(NSSize(width: cardSize.width + margin * 2, height: cardSize.height + margin * 2))
+
+        if let parent = window, parent.isVisible {
+            var frame = panel.frame
+            frame.origin = NSPoint(x: parent.frame.midX - frame.width / 2, y: parent.frame.midY - frame.height / 2)
+            if let screen = parent.screen ?? NSScreen.main {
+                frame = panel.constrainFrameRect(frame, to: screen)
+            }
+            panel.setFrame(frame, display: false)
+        } else {
+            panel.center()
+        }
+        return panel
+    }
+
     private func buildMenu() {
         let main = NSMenu()
         /// `firstResponder` items have no target, so the focused view (e.g. a text view) handles them.
@@ -1040,6 +1201,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let m = NSMenu(title: title); holder.submenu = m; return m
         }
         let app = submenu("NoteCanvas")
+        item("About NoteCanvas", #selector(showAbout(_:)), in: app)
+        app.addItem(.separator())
         item("Check for Updates…", #selector(checkForUpdates(_:)), in: app)
         item("Quit NoteCanvas", #selector(NSApplication.terminate(_:)), "q", in: app)
         let file = submenu("File")
