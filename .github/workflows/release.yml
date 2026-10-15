@@ -63,7 +63,7 @@ jobs:
           fi
 
   # stevec.couttsnet.com serves /downloads/ from /home/stevec/downloads on hetzner.
-  # This job runs on that host, so it does not need an SSH key in GitHub.
+  # Release zips go in downloads/notecanvas/. This job runs on that host, so it does not need an SSH key in GitHub.
   site-downloads:
     needs: release
     runs-on: [self-hosted, hetzner]
@@ -77,8 +77,10 @@ jobs:
         run: |
           set -euo pipefail
           name="NoteCanvas-${VERSION}.zip"
-          dest="${HOME}/downloads/${name}"
-          tmp="$(mktemp "${HOME}/downloads/.${name}.XXXXXX")"
+          dir="${HOME}/downloads/notecanvas"
+          mkdir -p "$dir"
+          dest="${dir}/${name}"
+          tmp="$(mktemp "${dir}/.${name}.XXXXXX")"
           trap 'rm -f "$tmp"' EXIT
           asset_id=""
           for _ in 1 2 3 4 5 6; do
