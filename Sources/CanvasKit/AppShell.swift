@@ -1100,6 +1100,13 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if sections.contains(where: { $0.id == moving }) {
             if item == nil, index != NSOutlineViewDropOnItemIndex { return .move }
             guard let row = item as? SidebarRow, let target = sectionIndex(of: row.id) else { return [] }
+            // Dropped on another section: it is folded into that one. Dropped on a page or folder: it reorders.
+            if row.id == moving { return [] }
+            if row.id == sections[target].id {
+                if isClosedLocked(row.id) || isClosedLocked(moving) { return [] }
+                outlineView.setDropItem(row, dropChildIndex: NSOutlineViewDropOnItemIndex)
+                return .move
+            }
             outlineView.setDropItem(nil, dropChildIndex: target)
             return .move
         }
@@ -1125,6 +1132,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let at = index == NSOutlineViewDropOnItemIndex ? Int.max : index
         if pkg.notebook.sections.contains(where: { $0.id == id }) {
             do {
+                if index == NSOutlineViewDropOnItemIndex, let row = item as? SidebarRow, row.id != id, isSectionRow(row.id) {
+                    return foldSection(id, into: row.id)
+                }
                 guard try pkg.moveSection(id, to: at) else { return false }
                 package = pkg
                 reloadPages()
@@ -1147,6 +1157,29 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             guard flushController() else { inform("This page could not be saved", "Fix the problem, then try again."); return false }
             guard var live = package else { return false }
             let result = try live.relocate(id, fromSection: owner, toSection: target, inFolder: parent)
+            package = live
+            dropPage()
+            reloadPages()
+            if let first = result.topLevelIDs.first { selectNav(first) }
+            return true
+        } catch { show(error); reloadFromDisk(); return false }
+    }
+
+    /// Folds a section into another one as a folder, after asking.
+    private func foldSection(_ id: UUID, into targetID: UUID) -> Bool {
+        guard let sections = package?.notebook.sections,
+              let source = sections.first(where: { $0.id == id }), let target = sections.first(where: { $0.id == targetID }) else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Move \u{201C}\(source.name)\u{201D} into \u{201C}\(target.name)\u{201D}?"
+        alert.informativeText = "A section cannot sit inside another section, so it becomes a folder in \u{201C}\(target.name)\u{201D} with everything in it. The section itself is removed."
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        commitEditing()
+        guard flushController() else { inform("This page could not be saved", "Fix the problem, then try again."); return false }
+        guard var live = package else { return false }
+        do {
+            let result = try live.mergeSection(id, into: targetID)
             package = live
             dropPage()
             reloadPages()

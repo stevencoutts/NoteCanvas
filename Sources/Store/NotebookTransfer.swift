@@ -58,6 +58,27 @@ public extension NotebookPackage {
         return result
     }
 
+    /// Folds a whole section into another section of this notebook as a folder named after it, keeping its
+    /// pages and folders. The copy is finished before the old section is removed, so a failure never loses a page.
+    /// Both sections must be readable, and the last remaining section is never the one removed.
+    mutating func mergeSection(_ id: UUID, into targetID: UUID) throws -> TransferResult {
+        guard id != targetID,
+              let from = notebook.sections.firstIndex(where: { $0.id == id }),
+              let to = notebook.sections.firstIndex(where: { $0.id == targetID }) else { throw StoreError.noSuchSection }
+        for owner in [id, targetID] where !isSectionReadable(owner) { throw StoreError.sectionLocked(owner) }
+        let snapshot = self
+        let section = snapshot.notebook.sections[from]
+        var result = TransferResult()
+        let wrapper = try addFolder(named: section.name, section: to, inFolder: nil)
+        result.topLevelIDs = [wrapper]
+        result.folders += 1
+        for node in section.items {
+            _ = try Self.copyNode(node, of: snapshot, into: &self, section: to, parent: wrapper, result: &result)
+        }
+        try deleteSection(id)
+        return result
+    }
+
     /// Moves pages or folders to another section of this notebook. The pieces are copied first and removed from
     /// the old place only once the copy is complete, so a failure part way never loses a page.
     mutating func relocate(_ id: UUID, fromSection: Int, toSection: Int, inFolder parent: UUID?) throws -> TransferResult {
