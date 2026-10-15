@@ -10,8 +10,10 @@ public struct Folder: Codable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var children: [NotebookItem]
-    public init(id: UUID, name: String, children: [NotebookItem] = []) {
-        self.id = id; self.name = name; self.children = children
+    /// "#RRGGBB" when this folder has a sidebar colour. Missing on notebooks saved before colours.
+    public var colorHex: String?
+    public init(id: UUID, name: String, children: [NotebookItem] = [], colorHex: String? = nil) {
+        self.id = id; self.name = name; self.children = children; self.colorHex = colorHex
     }
 }
 
@@ -99,6 +101,12 @@ public struct Section: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func renameFolder(_ id: UUID, to name: String) -> Bool {
         Self.rename(id, to: name, in: &items)
+    }
+
+    /// Sets the folder's sidebar colour. Nil clears it. Pages inside the folder are left alone.
+    @discardableResult
+    public mutating func setFolderColor(_ id: UUID, to colorHex: String?) -> Bool {
+        Self.setColor(id, to: colorHex, in: &items)
     }
 
     /// Removes the folder and leaves its contents where the folder was.
@@ -218,6 +226,22 @@ public struct Section: Codable, Equatable, Sendable {
                 return true
             }
             if rename(id, to: name, in: &folder.children) {
+                items[i] = .folder(folder)
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func setColor(_ id: UUID, to colorHex: String?, in items: inout [NotebookItem]) -> Bool {
+        for i in items.indices {
+            guard case .folder(var folder) = items[i] else { continue }
+            if folder.id == id {
+                folder.colorHex = colorHex
+                items[i] = .folder(folder)
+                return true
+            }
+            if setColor(id, to: colorHex, in: &folder.children) {
                 items[i] = .folder(folder)
                 return true
             }

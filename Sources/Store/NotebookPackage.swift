@@ -158,6 +158,14 @@ public struct NotebookPackage {
         try commitManifest(updated)
     }
 
+    /// Writes the folder colour into notebook.json immediately. Nil clears it.
+    public mutating func setFolderColor(_ id: UUID, section: Int, to colorHex: String?) throws {
+        guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
+        var updated = notebook
+        guard updated.sections[section].setFolderColor(id, to: colorHex) else { return }
+        try commitManifest(updated)
+    }
+
     /// The folder goes away; pages and folders that were inside it stay.
     public mutating func dissolveFolder(_ id: UUID, section: Int) throws {
         guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }

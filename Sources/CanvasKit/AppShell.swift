@@ -10,7 +10,56 @@ private final class SidebarRow: NSObject {
     init(id: UUID) { self.id = id; super.init() }
 }
 
-public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
+/// One sidebar row. A folder draws a small mark and its title in the folder colour; a page stays ink.
+private final class NavCell: NSTableCellView {
+    let mark = NSImageView()
+    let title = NSTextField(labelWithString: "")
+    private let titleLead: NSLayoutConstraint
+    var titleColor: NSColor = .labelColor { didSet { title.textColor = titleColor } }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { title.textColor = titleColor }
+    }
+
+    init() {
+        mark.translatesAutoresizingMaskIntoConstraints = false
+        mark.imageScaling = .scaleProportionallyDown
+        mark.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "Folder")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.lineBreakMode = .byTruncatingTail
+        title.drawsBackground = false
+        title.isBordered = false
+        title.isBezeled = false
+        title.focusRingType = .none
+        (title.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = true
+        titleLead = title.leadingAnchor.constraint(equalTo: mark.leadingAnchor)
+        super.init(frame: .zero)
+        identifier = NSUserInterfaceItemIdentifier("nav")
+        addSubview(mark)
+        addSubview(title)
+        textField = title
+        NSLayoutConstraint.activate([
+            mark.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            mark.centerYAnchor.constraint(equalTo: centerYAnchor),
+            mark.widthAnchor.constraint(equalToConstant: 14),
+            mark.heightAnchor.constraint(equalToConstant: 14),
+            titleLead,
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func showMark(_ show: Bool, tint: NSColor) {
+        mark.isHidden = !show
+        mark.contentTintColor = tint
+        titleLead.constant = show ? 18 : 0
+    }
+}
+
+public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var window: NSWindow!
     private var package: NotebookPackage?
     private var controller: PageController?
@@ -32,6 +81,19 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private let headingPopup = NSPopUpButton()
     private let sizePopup = NSPopUpButton()
     private let colorWell = NSColorWell()
+
+    /// Stationery colours for a folder. Default clears the colour so the title stays ink.
+    private struct FolderSwatch { var name: String; var hex: String? }
+    private static let folderSwatches: [FolderSwatch] = [
+        FolderSwatch(name: "Red", hex: "#A33B32"),
+        FolderSwatch(name: "Orange", hex: "#C4622D"),
+        FolderSwatch(name: "Gold", hex: "#8F7020"),
+        FolderSwatch(name: "Green", hex: "#3D7048"),
+        FolderSwatch(name: "Teal", hex: "#2A6E68"),
+        FolderSwatch(name: "Blue", hex: "#34547E"),
+        FolderSwatch(name: "Purple", hex: "#684674"),
+        FolderSwatch(name: "Default", hex: nil),
+    ]
 
     public override init() { super.init() }
 
@@ -326,32 +388,16 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard let row = item as? SidebarRow, let section = currentSectionModel() else { return nil }
         let folder = section.folder(row.id)
         let title = folder?.name ?? section.pages.first { $0.id == row.id }?.title ?? ""
-        let cell = (outlineView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("nav"), owner: self) as? NSTableCellView) ?? NSTableCellView()
-        cell.identifier = NSUserInterfaceItemIdentifier("nav")
-        if cell.textField == nil {
-            let text = NSTextField(labelWithString: "")
-            text.translatesAutoresizingMaskIntoConstraints = false
-            text.lineBreakMode = .byTruncatingTail
-            text.drawsBackground = false
-            text.isBordered = false
-            text.isBezeled = false
-            text.focusRingType = .none
-            (text.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = true
-            cell.addSubview(text)
-            cell.textField = text
-            NSLayoutConstraint.activate([
-                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-        }
-        cell.textField?.stringValue = title
-        cell.textField?.font = .systemFont(ofSize: 13, weight: folder == nil ? .regular : .semibold)
-        cell.textField?.textColor = Palette.ink
-        cell.textField?.isEditable = folder != nil
-        cell.textField?.target = folder == nil ? nil : self
-        cell.textField?.action = folder == nil ? nil : #selector(commitFolderName(_:))
-        cell.textField?.identifier = NSUserInterfaceItemIdentifier(row.id.uuidString)
+        let cell = (outlineView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("nav"), owner: self) as? NavCell) ?? NavCell()
+        let color = folder == nil ? Palette.ink : Self.folderColor(folder?.colorHex)
+        cell.showMark(folder != nil, tint: color)
+        cell.title.stringValue = title
+        cell.title.font = .systemFont(ofSize: 13, weight: folder == nil ? .regular : .semibold)
+        cell.titleColor = color
+        cell.title.isEditable = folder != nil
+        cell.title.target = folder == nil ? nil : self
+        cell.title.action = folder == nil ? nil : #selector(commitFolderName(_:))
+        cell.title.identifier = NSUserInterfaceItemIdentifier(row.id.uuidString)
         return cell
     }
 
@@ -442,6 +488,83 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let name = trimmed.isEmpty ? "Folder" : trimmed
         do {
             try pkg.renameFolder(id, section: currentSection, to: name)
+            package = pkg
+            if let row = navRows[id] { outline.reloadItem(row) }
+        } catch { show(error) }
+    }
+
+    /// The folder row under the pointer, when the context menu is opening.
+    private func clickedFolderID() -> UUID? {
+        var row = outline.clickedRow
+        if row < 0, let event = NSApp.currentEvent {
+            row = outline.row(at: outline.convert(event.locationInWindow, from: nil))
+        }
+        guard row >= 0, let item = outline.item(atRow: row) as? SidebarRow else { return nil }
+        guard currentSectionModel()?.folder(item.id) != nil else { return nil }
+        return item.id
+    }
+
+    private func selectedFolderID() -> UUID? {
+        guard let id = selectedID(), currentSectionModel()?.folder(id) != nil else { return nil }
+        return id
+    }
+
+    private static func folderColor(_ hex: String?) -> NSColor {
+        if let hex, let color = AttributedBridge.color(hex: hex) { return color }
+        return Palette.ink
+    }
+
+    private static func swatchImage(_ hex: String) -> NSImage? {
+        guard let color = AttributedBridge.color(hex: hex) else { return nil }
+        let image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    private func folderColorItems(id: UUID, current: String?) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        for (index, swatch) in Self.folderSwatches.enumerated() {
+            if swatch.hex == nil { items.append(.separator()) }
+            let item = NSMenuItem(title: swatch.name, action: #selector(pickFolderColor(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.representedObject = id.uuidString
+            item.state = swatch.hex == current ? .on : .off
+            if let hex = swatch.hex { item.image = Self.swatchImage(hex) }
+            items.append(item)
+        }
+        return items
+    }
+
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu == outline.menu {
+            menu.removeAllItems()
+            guard let id = clickedFolderID(), let folder = currentSectionModel()?.folder(id) else { return }
+            for item in folderColorItems(id: id, current: folder.colorHex) { menu.addItem(item) }
+            return
+        }
+        let folder = selectedFolderID().flatMap { currentSectionModel()?.folder($0) }
+        for item in menu.items where item.action == #selector(pickFolderColor(_:)) && Self.folderSwatches.indices.contains(item.tag) {
+            item.state = folder != nil && Self.folderSwatches[item.tag].hex == folder?.colorHex ? .on : .off
+        }
+    }
+
+    @objc func pickFolderColor(_ sender: NSMenuItem) {
+        guard Self.folderSwatches.indices.contains(sender.tag) else { return }
+        let hex = Self.folderSwatches[sender.tag].hex
+        let id: UUID
+        if let raw = sender.representedObject as? String, let parsed = UUID(uuidString: raw) {
+            id = parsed
+        } else if let selected = selectedFolderID() {
+            id = selected
+        } else { return }
+        guard var pkg = package else { return }
+        do {
+            try pkg.setFolderColor(id, section: currentSection, to: hex)
             package = pkg
             if let row = navRows[id] { outline.reloadItem(row) }
         } catch { show(error) }
@@ -646,6 +769,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     /// Backspace is Delete Object's key equivalent; never let it fire while a text view has focus (it would eat the keystroke).
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if importCancel != nil { return false }     // an import is running: no menu action may replace the notebook under it
+        if item.action == #selector(pickFolderColor(_:)) {
+            if item.representedObject != nil { return true }   // right-click already targeted a folder
+            return selectedFolderID() != nil
+        }
         guard item.action == #selector(deleteObject(_:)) else { return true }
         guard controller?.hasSelectedObject == true else { return false }
         if NSApp.currentEvent?.type == .keyDown {
@@ -728,6 +855,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         outline.doubleAction = #selector(renameFolder(_:))
         outline.registerForDraggedTypes([navType])
         outline.setDraggingSourceOperationMask(.move, forLocal: true)
+        let outlineMenu = NSMenu()
+        outlineMenu.delegate = self
+        outline.menu = outlineMenu
         let sideScroll = NSScrollView()
         sideScroll.documentView = outline
         sideScroll.hasVerticalScroller = true
@@ -906,6 +1036,21 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("Open Notebook…", #selector(openNotebook(_:)), "o", in: file)
         item("New Page", #selector(addPage(_:)), "t", in: file)
         item("New Folder", #selector(addFolder(_:)), "n", mods: [.command, .shift], in: file)
+        let colorMenu = NSMenu(title: "Color")
+        colorMenu.delegate = self
+        let colorItem = NSMenuItem(title: "Color", action: #selector(pickFolderColor(_:)), keyEquivalent: "")
+        colorItem.target = self
+        colorItem.tag = -1
+        colorItem.submenu = colorMenu
+        file.addItem(colorItem)
+        for (index, swatch) in Self.folderSwatches.enumerated() {
+            if swatch.hex == nil { colorMenu.addItem(.separator()) }
+            let choice = NSMenuItem(title: swatch.name, action: #selector(pickFolderColor(_:)), keyEquivalent: "")
+            choice.target = self
+            choice.tag = index
+            if let hex = swatch.hex { choice.image = Self.swatchImage(hex) }
+            colorMenu.addItem(choice)
+        }
         item("Import .one…", #selector(importOne(_:)), "i", in: file)
         let insert = submenu("Insert")
         item("Bullet List", #selector(bullet(_:)), in: insert)

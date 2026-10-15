@@ -253,4 +253,20 @@ func folderChecks() {
     let again = try! JSONDecoder().decode(Section.self, from: JSONEncoder().encode(section))
     checkEqual(again, section, "folders round-trip through JSON")
     checkEqual(again.pages.map(\.id), section.pages.map(\.id), "the flat page list is written beside the tree")
+
+    let kept = PageRef(id: UUID(), title: "Kept")
+    let plain = Folder(id: UUID(), name: "Work", children: [.page(kept)])
+    var stripped = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as! [String: Any]
+    stripped.removeValue(forKey: "colorHex")
+    let uncolored = try! JSONDecoder().decode(Folder.self, from: JSONSerialization.data(withJSONObject: stripped))
+    checkEqual(uncolored.colorHex, nil as String?, "a folder saved without a colour decodes")
+    checkEqual(uncolored.children, [.page(kept)], "a missing colour leaves the page title")
+
+    var colored = Section(id: UUID(), name: "S", items: [.folder(uncolored)])
+    let titles = colored.pages.map(\.title)
+    check(colored.setFolderColor(uncolored.id, to: "#A33B32"), "a folder can take a colour")
+    let saved = try! JSONDecoder().decode(Section.self, from: JSONEncoder().encode(colored))
+    checkEqual(saved.folder(uncolored.id)?.colorHex, "#A33B32", "a folder colour round-trips")
+    checkEqual(saved.pages.map(\.title), titles, "a folder colour does not change page titles")
+    checkEqual(titles, ["Kept"], "the page title is still Kept")
 }
