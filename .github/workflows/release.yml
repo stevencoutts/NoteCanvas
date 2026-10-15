@@ -63,7 +63,9 @@ jobs:
           fi
 
   # stevec.couttsnet.com serves /downloads/ from /home/stevec/downloads on hetzner.
-  # Release zips go in downloads/notecanvas/. This job runs on that host, so it does not need an SSH key in GitHub.
+  # Release zips go in downloads/notecanvas/macos/. The newest five stay there, older ones move to macos/archive/,
+  # and macos/NoteCanvas-latest.zip always points at the newest. This job runs on that host, so it does not need an SSH key in GitHub.
+  # Apps built before the macos/ folder existed fetch downloads/notecanvas/NoteCanvas-<latest>.zip, so one link at that old path keeps them updating.
   site-downloads:
     needs: release
     runs-on: [self-hosted, hetzner]
@@ -77,8 +79,14 @@ jobs:
         run: |
           set -euo pipefail
           name="NoteCanvas-${VERSION}.zip"
-          dir="${HOME}/downloads/notecanvas"
-          mkdir -p "$dir"
+          base="${HOME}/downloads/notecanvas"
+          dir="${base}/macos"
+          archive="${dir}/archive"
+          mkdir -p "$dir" "$archive"
+          # Bring zips from the old flat layout into macos/ (a one-off that does nothing once they have moved).
+          for old in "${base}"/NoteCanvas-[0-9]*.zip; do
+            [ -f "$old" ] && [ ! -L "$old" ] && mv -n "$old" "$dir/"
+          done
           dest="${dir}/${name}"
           tmp="$(mktemp "${dir}/.${name}.XXXXXX")"
           trap 'rm -f "$tmp"' EXIT
@@ -107,3 +115,20 @@ jobs:
           chmod 644 "$tmp"
           mv "$tmp" "$dest"
           trap - EXIT
+          # Keep the newest five zips in macos/ and move the rest into macos/archive/.
+          mapfile -t zips < <(printf '%s\n' "${dir}"/NoteCanvas-[0-9]*.zip | sort -V)
+          keep=5
+          if [ "${#zips[@]}" -gt "$keep" ]; then
+            for old in "${zips[@]:0:${#zips[@]}-keep}"; do
+              mv -n "$old" "${archive}/"
+            done
+          fi
+          mapfile -t zips < <(printf '%s\n' "${dir}"/NoteCanvas-[0-9]*.zip | sort -V)
+          newest="$(basename "${zips[${#zips[@]}-1]}")"
+          # NoteCanvas-latest.zip always names the newest zip. The link is relative, and replaced in one step.
+          ln -sfn "$newest" "${dir}/.NoteCanvas-latest.zip.new"
+          mv -fT "${dir}/.NoteCanvas-latest.zip.new" "${dir}/NoteCanvas-latest.zip"
+          # Older apps look for the zip at the old flat path. Keep exactly one link there, for the newest.
+          find "$base" -maxdepth 1 -type l -name 'NoteCanvas-*.zip' -delete
+          ln -s "macos/${newest}" "${base}/${newest}"
+

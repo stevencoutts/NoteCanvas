@@ -2,7 +2,7 @@ import AppKit
 
 /// Learns the latest version tag from GitHub Releases and installs a newer NoteCanvas.app.
 ///
-/// The zip is always `https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-<version>.zip`
+/// The zip is always `https://stevec.couttsnet.com/downloads/notecanvas/macos/NoteCanvas-<version>.zip`
 /// (version without a leading v). GitHub asset URLs are ignored, and a failed download is not
 /// retried from GitHub.
 ///
@@ -65,9 +65,9 @@ public enum AppUpdate {
         return Release(version: version, zipURL: zipURL)
     }
 
-    /// `https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-<version>.zip`, with no leading v.
+    /// `https://stevec.couttsnet.com/downloads/notecanvas/macos/NoteCanvas-<version>.zip`, with no leading v.
     static func downloadURL(for version: Version) -> URL? {
-        URL(string: "https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-\(version).zip")
+        URL(string: "https://stevec.couttsnet.com/downloads/notecanvas/macos/NoteCanvas-\(version).zip")
     }
 
     public static func isUpdate(_ remote: Version, replacing current: Version) -> Bool {
