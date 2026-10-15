@@ -4,11 +4,12 @@ import OneStore
 import PageModel
 import Store
 
-final class ImportCancelFlag {
+public final class ImportCancelFlag {
     private let lock = NSLock()
     private var flag = false
-    func cancel() { lock.lock(); flag = true; lock.unlock() }
-    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    public init() {}
+    public func cancel() { lock.lock(); flag = true; lock.unlock() }
+    public var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return flag }
 }
 
 /// TextKit measurement belongs on the main thread; the importer calls this from its background queue.

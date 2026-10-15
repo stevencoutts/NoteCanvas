@@ -97,6 +97,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var collapsed = Set<UUID>()         // sections and folders the user has folded away
     private var importCancel: ImportCancelFlag?
     private var progressSheet: NSPanel?
+    private var progressLabel: NSTextField?
 
     private let outline = NSOutlineView()
     private var navRows: [UUID: SidebarRow] = [:]
@@ -1027,10 +1028,92 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     @objc func cancelImport(_ sender: Any?) { importCancel?.cancel() }
 
+    // MARK: import all backups
+
+    @objc func importBackups(_ sender: Any?) {
+        let source = NSOpenPanel()
+        source.canChooseFiles = false
+        source.canChooseDirectories = true
+        source.message = "Choose the folder that holds your OneNote backups"
+        source.prompt = "Scan"
+        let standard = BackupScanner.defaultBackupFolder()
+        if FileManager.default.fileExists(atPath: standard.path) { source.directoryURL = standard }
+        guard source.runModal() == .OK, let root = source.url else { return }
+        let scan = BackupScanner.scan(root)
+        guard scan.sectionCount > 0 else {
+            inform("No OneNote sections found",
+                   "There are no .one files in “\(root.lastPathComponent)”.\n\nIf this is OneNote's own backup folder, macOS may be "
+                   + "blocking access to another app's data. Allow NoteCanvas under System Settings > Privacy & Security > Full Disk Access, "
+                   + "then try again.")
+            return
+        }
+        let plural: (Int, String) -> String = { n, word in "\(n) \(word)\(n == 1 ? "" : "s")" }
+        let confirm = NSAlert()
+        confirm.messageText = "Import \(plural(scan.sectionCount, "section")) from \(plural(scan.notebooks.count, "notebook"))?"
+        var lines = ["Each OneNote notebook becomes its own NoteCanvas notebook. Section groups become “Group / Section” names."]
+        if scan.olderCopiesSkipped > 0 {
+            lines.append("Only the newest copy of each section is imported. \(plural(scan.olderCopiesSkipped, "older dated copy")) will be skipped.")
+        }
+        lines.append("Your backup files are only read, never changed. This can take several minutes.")
+        confirm.informativeText = lines.joined(separator: "\n\n")
+        confirm.addButton(withTitle: "Choose Destination…")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        let target = NSOpenPanel()
+        target.canChooseFiles = false
+        target.canChooseDirectories = true
+        target.canCreateDirectories = true
+        target.message = "Choose a folder to save the new notebooks in"
+        target.prompt = "Import"
+        guard target.runModal() == .OK, let destination = target.url else { return }
+
+        let cancel = ImportCancelFlag()
+        importCancel = cancel
+        beginProgressSheet(fileName: "OneNote backups")
+        BackupImportRunner.run(scan, into: destination, cancel: cancel, progress: { [weak self] step in
+            self?.progressLabel?.stringValue = "Importing “\(step.section)” (\(step.done + 1) of \(step.total))…"
+        }, completion: { [weak self] outcome in
+            self?.endProgressSheet()
+            self?.finishBackupImport(outcome)
+        })
+    }
+
+    private func finishBackupImport(_ outcome: BackupImportOutcome) {
+        var lines: [String] = []
+        if !outcome.notebooks.isEmpty {
+            let sections = outcome.notebooks.reduce(0) { $0 + $1.sections }
+            var pages = "\(sections) \(sections == 1 ? "section" : "sections"), \(outcome.pagesImported) of \(outcome.pagesTotal) pages imported"
+            if outcome.pagesFailed > 0 { pages += " (\(outcome.pagesFailed) could not be read)" }
+            lines.append(pages)
+        }
+        if let error = outcome.error { lines.append("The import stopped early: \(error)") }
+        if outcome.cancelled { lines.append("You cancelled the import. Notebooks made so far were kept.") }
+        if !outcome.failed.isEmpty {
+            let shown = outcome.failed.prefix(10).joined(separator: "\n")
+            let more = outcome.failed.count > 10 ? "\n…and \(outcome.failed.count - 10) more" : ""
+            lines.append("\(outcome.failed.count) \(outcome.failed.count == 1 ? "section" : "sections") could not be read and were skipped:\n\(shown)\(more)")
+        }
+        guard let first = outcome.notebooks.first else {
+            inform("Nothing was imported", lines.isEmpty ? "No section could be imported." : lines.joined(separator: "\n\n"))
+            return
+        }
+        let done = NSAlert()
+        done.messageText = outcome.notebooks.count == 1 ? "Imported 1 notebook" : "Imported \(outcome.notebooks.count) notebooks"
+        done.informativeText = lines.joined(separator: "\n\n")
+        done.addButton(withTitle: "Open “\(first.name)”")
+        done.addButton(withTitle: "Done")
+        guard done.runModal() == .alertFirstButtonReturn, saveOrDiscard("Continue") else { return }
+        do { use(try NotebookPackage.open(at: first.url)) } catch { show(error) }
+    }
+
     private func beginProgressSheet(fileName: String) {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Importing"
         let label = NSTextField(labelWithString: "Importing “\(fileName)”…")
+        label.lineBreakMode = .byTruncatingMiddle
+        label.widthAnchor.constraint(equalToConstant: 328).isActive = true
+        progressLabel = label
         let bar = NSProgressIndicator()
         bar.style = .bar
         bar.isIndeterminate = true
@@ -1049,6 +1132,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func endProgressSheet() {
         if let panel = progressSheet { window.endSheet(panel); panel.orderOut(nil) }
         progressSheet = nil
+        progressLabel = nil
         importCancel = nil
     }
 
@@ -1570,6 +1654,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             colorMenu.addItem(choice)
         }
         item("Import .one…", #selector(importOne(_:)), "i", in: file)
+        item("Import OneNote Backups…", #selector(importBackups(_:)), "i", mods: [.command, .shift], in: file)
         file.addItem(.separator())
         item("Encrypt Notebook…", #selector(encryptNotebook(_:)), in: file)
         item("Change Passphrase…", #selector(changePassphrase(_:)), in: file)

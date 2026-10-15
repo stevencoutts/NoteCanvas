@@ -12,6 +12,7 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 - Insert bullet and numbered lists, and insert images from disk or the clipboard.
 - Draw imported images, tables, and attachments. Move, copy, and delete them. Editing tools for tables and ink are not in this version.
 - Import a `.one` section with **File > Import .one…**. The import runs in the background and can be cancelled. The source file is only read. A failed or cancelled import does not add a section.
+- Import every OneNote backup on the laptop with **File > Import OneNote Backups…**. It scans a backup folder (it starts at OneNote for Mac's own backup location), keeps the newest dated copy of each section, and creates one notebook per OneNote notebook in a folder you choose. Section groups become `Group / Section` names. Sections that cannot be read are listed and skipped. The backup files are only read.
 
 Import is lossy by design. The app keeps its own page model. Anything it cannot represent is counted in a report saved inside the notebook (`imports/<section-id>.json`). That report is counts and ids only, not note text.
 
