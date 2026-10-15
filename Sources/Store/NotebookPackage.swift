@@ -265,9 +265,12 @@ public struct NotebookPackage {
         guard let data = readObject(kind: .page, logicalPath: Self.pageLogicalPath(id), from: pageURL(id), scope: objectScope),
               let page = try? JSONDecoder().decode(Page.self, from: data) else {
             // A page under a Section Key in a section the manifest does not mark locked: locking was interrupted.
-            if case .notebook = objectScope, let owner = sectionID(ofPage: id),
-               let raw = try? Data(contentsOf: pageURL(id)), SectionCrypto.isSectionObject(raw) {
-                throw StoreError.sectionLocked(owner)
+            if case .notebook = objectScope, let raw = try? Data(contentsOf: pageURL(id)), SectionCrypto.isSectionObject(raw) {
+                // The page of a closed locked section is not listed in any section, so its owner is not known.
+                // Name a closed locked section (the only one, in the common case) so the caller can ask for it.
+                if let owner = sectionID(ofPage: id) ?? locks.first(where: { $0.value.key == nil })?.key {
+                    throw StoreError.sectionLocked(owner)
+                }
             }
             throw StoreError.corruptPage(id)
         }
