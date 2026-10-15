@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "CanvasKit", dependencies: ["PageModel", "Store", "OneStore", "OneImport"]),
         .executableTarget(name: "Checks", dependencies: ["PageModel", "Store", "OneStore", "OneImport", "CanvasKit"]),
         .executableTarget(name: "CanvasApp", dependencies: ["CanvasKit"]),
+        .executableTarget(name: "DemoNotebook", dependencies: ["PageModel", "Store"]),
     ],
     swiftLanguageModes: [.v5]
 )
