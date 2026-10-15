@@ -143,6 +143,32 @@ public struct NotebookPackage {
         return section
     }
 
+    /// Adds an empty section at the end. Nothing but the manifest changes.
+    public mutating func addEmptySection(name: String) throws -> Section {
+        try addSection(name: name, pages: [])
+    }
+
+    /// Renames the section with this id. An unknown id changes nothing.
+    public mutating func renameSection(_ id: UUID, to name: String) throws {
+        var updated = notebook
+        guard let index = updated.sections.firstIndex(where: { $0.id == id }) else { return }
+        updated.sections[index].name = name
+        try commitManifest(updated)
+    }
+
+    /// Removes the section and moves its page files to the Trash, manifest first so nothing dangles.
+    /// The last remaining section is never removed. Returns false when nothing was removed.
+    @discardableResult
+    public mutating func deleteSection(_ id: UUID) throws -> Bool {
+        guard notebook.sections.count > 1, let index = notebook.sections.firstIndex(where: { $0.id == id }) else { return false }
+        let doomed = notebook.sections[index].pages.map(\.id)
+        var updated = notebook
+        updated.sections.remove(at: index)
+        try commitManifest(updated)
+        for pageID in doomed { _ = try? FileManager.default.trashItem(at: pageURL(pageID), resultingItemURL: nil) }
+        return true
+    }
+
     public mutating func addFolder(named name: String, section: Int, inFolder parent: UUID?) throws -> UUID {
         guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
         var updated = notebook

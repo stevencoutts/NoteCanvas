@@ -7,6 +7,7 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 ## What you can do
 
 - Place, move, resize, and format text boxes. Undo and redo cover those edits.
+- Organise notes as sections, folders and pages in a sidebar tree. Every section and folder folds away. Add, rename and delete sections from the sidebar buttons, the File menu, or a right-click.
 - Insert bullet and numbered lists, and insert images from disk or the clipboard.
 - Draw imported images, tables, and attachments. Move, copy, and delete them. Editing tools for tables and ink are not in this version.
 - Import a `.one` section with **File > Import .one…**. The import runs in the background and can be cancelled. The source file is only read. A failed or cancelled import does not add a section.

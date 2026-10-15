@@ -30,6 +30,23 @@ func storeChecks() {
     // empty page round-trips (Review Focus 1)
     checkEqual(try! pkg.loadPage(other.id).objects.count, 0, "empty page loads")
 
+    // sections: add, rename, delete
+    var sectioned = try! NotebookPackage.create(at: root.appendingPathComponent("Sections.notebook"), name: "S")
+    let firstSection = sectioned.notebook.sections[0].id
+    let extra = try! sectioned.addEmptySection(name: "Second")
+    checkEqual(sectioned.notebook.sections.map(\.name), ["Section 1", "Second"], "an empty section is appended")
+    checkEqual(sectioned.notebook.sections[1].pages.count, 0, "a new section has no pages")
+    try! sectioned.renameSection(extra.id, to: "Renamed")
+    checkEqual(try! NotebookPackage.open(at: sectioned.url).notebook.sections[1].name, "Renamed", "a section rename reaches disk")
+    try! sectioned.renameSection(UUID(), to: "Nope")
+    checkEqual(sectioned.notebook.sections.map(\.name), ["Section 1", "Renamed"], "renaming an unknown section changes nothing")
+    let kept = try! sectioned.addPage(title: "Kept", section: 1)
+    check(try! sectioned.deleteSection(extra.id), "a section can be deleted")
+    checkEqual(sectioned.notebook.sections.map(\.id), [firstSection], "the deleted section is gone from the manifest")
+    check(!(try! sectioned.deleteSection(firstSection)), "the last section is never deleted")
+    check(!(try! sectioned.deleteSection(UUID())), "deleting an unknown section does nothing")
+    _ = kept
+
     // stray temp file next to a page does not matter
     try! Data("junk".utf8).write(to: url.appendingPathComponent("pages/\(page.id.uuidString).json.tmp"))
     checkEqual(try! pkg.loadPage(page.id), page, "stray .tmp file is ignored")
