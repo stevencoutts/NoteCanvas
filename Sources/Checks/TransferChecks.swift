@@ -68,6 +68,10 @@ func transferChecks() {
     checkEqual(titles(source.notebook.sections[1]), ["P2"], "the page arrives in the new section")
     check((try? source.loadPage(moved.topLevelIDs[0])) != nil, "the moved page can be opened")
 
+    // delete a folder with its pages
+    try! source.deleteItem(folder, section: 0)
+    checkEqual(source.notebook.sections[0].items.count, 0, "deleting a folder removes it and its pages")
+
     // fold one section into another
     let before = source.notebook.sections.first { $0.id == sectionA }!.items.count
     let folded = try! source.mergeSection(sectionB.id, into: sectionA)
@@ -78,8 +82,4 @@ func transferChecks() {
     check(host.pages.contains { $0.title == "P2" }, "its pages arrive inside")
     check((try? source.loadPage(host.pages.first { $0.title == "P2" }!.id)) != nil, "a folded page can be opened")
     check((try? source.mergeSection(sectionA, into: sectionA)) == nil, "a section cannot be folded into itself")
-
-    // delete a folder with its pages
-    try! source.deleteItem(folder, section: 0)
-    checkEqual(source.notebook.sections[0].items.count, 0, "deleting a folder removes it and its pages")
 }
