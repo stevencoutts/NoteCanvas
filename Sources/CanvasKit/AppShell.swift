@@ -1741,6 +1741,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         colorWell.target = self; colorWell.action = #selector(pickColor(_:))
 
         let bar = NSStackView(views: [
+            symbolButton("sidebar.left", #selector(toggleSidebar(_:)), tip: "Hide or show the sidebar (Control-Command-S)"),
+            barSeparator(),
             symbolButton("list.bullet", #selector(bullet(_:)), title: "Bullets", tip: "Insert a bullet list"),
             symbolButton("list.number", #selector(numbered(_:)), title: "Numbered", tip: "Insert a numbered list"),
             symbolButton("photo", #selector(insertImage(_:)), title: "Image", tip: "Insert an image"),
@@ -1875,6 +1877,28 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         sheetWidth?.constant = hidden ? 0 : -234
         UserDefaults.standard.set(hidden, forKey: Self.sidebarHiddenKey)
         window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    private func folderIDs(in items: [NotebookItem]) -> [UUID] {
+        var ids: [UUID] = []
+        for item in items {
+            if case .folder(let folder) = item { ids.append(folder.id); ids += folderIDs(in: folder.children) }
+        }
+        return ids
+    }
+
+    @objc func collapseAllSections(_ sender: Any?) {
+        for section in package?.notebook.sections ?? [] {
+            for id in folderIDs(in: section.items) { outline.collapseItem(navRow(id)) }
+            outline.collapseItem(navRow(section.id))
+        }
+    }
+
+    @objc func expandAllSections(_ sender: Any?) {
+        for section in package?.notebook.sections ?? [] {
+            outline.expandItem(navRow(section.id))
+            for id in folderIDs(in: section.items) { outline.expandItem(navRow(id)) }
+        }
     }
 
     @objc func toggleSidebar(_ sender: Any?) {
@@ -2074,6 +2098,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("Delete Object", #selector(deleteObject(_:)), "\u{7f}", mods: [], in: edit)
         let view = submenu("View")
         item("Hide Sidebar", #selector(toggleSidebar(_:)), "s", mods: [.command, .control], in: view)
+        view.addItem(.separator())
+        item("Collapse All Sections", #selector(collapseAllSections(_:)), "-", mods: [.command, .option], in: view)
+        item("Expand All Sections", #selector(expandAllSections(_:)), "=", mods: [.command, .option], in: view)
         let arrange = submenu("Arrange")
         item("Bring to Front", #selector(bringToFront(_:)), "]", in: arrange)
         item("Send to Back", #selector(sendToBack(_:)), "[", in: arrange)
