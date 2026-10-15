@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 1.0.0"
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Swift
+        run: bash .github/swift-toolchain.sh
+      - name: Resolve version
+        id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            raw="$REF_NAME"
+          fi
+          raw="${raw#v}"
+          if ! printf '%s' "$raw" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Version must look like 1.0.0 (got ${raw})." >&2
+            exit 1
+          fi
+          echo "version=$raw" >> "$GITHUB_OUTPUT"
+          echo "tag=v$raw" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: swift build -c release --product CanvasApp
+      - name: Package
+        run: bash .github/package-app.sh "${{ steps.ver.outputs.version }}"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          zip="dist/NoteCanvas-${VERSION}.zip"
+          test -f "$zip"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            gh release create "$TAG" "$zip" --title "NoteCanvas $TAG" --generate-notes --target "$GITHUB_SHA"
+          else
+            gh release create "$TAG" "$zip" --title "NoteCanvas $TAG" --generate-notes --verify-tag
+          fi

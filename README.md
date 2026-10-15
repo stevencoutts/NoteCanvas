@@ -45,6 +45,14 @@ On first launch, create or open a notebook folder.
 swift run Checks
 ```
 
+GitHub Actions runs these checks on every push and pull request to `main`.
+
+To publish a build, tag a version and push the tag:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
 A real-file check runs only when `ONE_CORPUS_DIR` is set, and it prints aggregate counts only. Do not commit `.one` files, note text, or notebook backups. Those patterns are listed in `.gitignore`.
 
 ## Layout
