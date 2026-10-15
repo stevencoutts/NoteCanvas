@@ -403,8 +403,27 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     /// Converted to sRGB so a picked system swatch is never a catalog colour (the bridge ignores those as "default").
     @objc func pickColor(_ s: Any?) { controller?.applyRun(.color(colorWell.color.usingColorSpace(.sRGB) ?? colorWell.color)) }
     @objc func pickHeading(_ s: Any?) { let h = headingPopup.indexOfSelectedItem; controller?.applyParagraph { $0.heading = h } }
-    @objc func bullet(_ s: Any?) { controller?.applyParagraph { $0.list = ($0.list == .bullet ? .none : .bullet) } }
-    @objc func numbered(_ s: Any?) { controller?.applyParagraph { $0.list = ($0.list == .numbered ? .none : .numbered) } }
+    @objc func bullet(_ s: Any?) { controller?.insertList(.bullet) }
+    @objc func numbered(_ s: Any?) { controller?.insertList(.numbered) }
+    @objc func insertImage(_ sender: Any?) {
+        guard controller != nil else {
+            inform("Open a page first", "Open a notebook page, then insert an image.")
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose an image to place on the page"
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK else { return }
+        var images: [(data: Data, ext: String, pointSize: NSSize)] = []
+        for url in panel.urls {
+            guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else { continue }
+            images.append((data, url.pathExtension, image.size))
+        }
+        controller?.addImages(images)
+    }
     @objc func alignLeft(_ s: Any?) { controller?.applyParagraph { $0.alignment = .left } }
     @objc func alignCenter(_ s: Any?) { controller?.applyParagraph { $0.alignment = .center } }
     @objc func alignRight(_ s: Any?) { controller?.applyParagraph { $0.alignment = .right } }
@@ -447,18 +466,38 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     // MARK: UI construction
 
+    /// Warm stationery colours. The sheet stays cream so typed text and images stay easy to read.
+    private enum Palette {
+        static let stone = NSColor(srgbRed: 0.90, green: 0.87, blue: 0.82, alpha: 1)
+        static let paper = NSColor(srgbRed: 0.99, green: 0.975, blue: 0.955, alpha: 1)
+        static let ink = NSColor(srgbRed: 0.24, green: 0.21, blue: 0.18, alpha: 1)
+        static let bar = NSColor(srgbRed: 1, green: 0.99, blue: 0.97, alpha: 1)
+        static let hairline = NSColor(srgbRed: 0.62, green: 0.55, blue: 0.46, alpha: 0.35)
+    }
+
     /// A quiet symbol button. It must not take keyboard focus away from the text being edited.
-    private func symbolButton(_ symbol: String, _ action: Selector, tip: String) -> NSButton {
+    private func symbolButton(_ symbol: String, _ action: Selector, title: String = "", tip: String) -> NSButton {
         let b = NSButton()
-        b.bezelStyle = .accessoryBarAction
-        b.imagePosition = .imageOnly
+        b.bezelStyle = .recessed
+        b.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
         b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
+        b.title = title
+        b.font = .systemFont(ofSize: 12, weight: .medium)
+        b.contentTintColor = Palette.ink
         b.target = self
         b.action = action
         b.refusesFirstResponder = true
         b.toolTip = tip
         return b
+    }
+
+    private func barSeparator() -> NSView {
+        let rule = NSBox()
+        rule.boxType = .separator
+        rule.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        rule.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        return rule
     }
 
     private func buildWindow() {
@@ -468,17 +507,16 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.title = "NoteCanvas"
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        window.isOpaque = true
+        window.backgroundColor = Palette.stone
         window.isReleasedWhenClosed = false          // the shell owns the window; closing it must not free it
         window.contentMinSize = NSSize(width: 760, height: 480)
         window.delegate = self
         window.center()
 
-        let glass = NSVisualEffectView()
-        glass.material = .sidebar
-        glass.blendingMode = .behindWindow
-        glass.state = .followsWindowActiveState
+        let glass = NSView()
+        glass.wantsLayer = true
+        glass.layer?.backgroundColor = Palette.stone.cgColor
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("title"))
         table.addTableColumn(column)
@@ -512,27 +550,49 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
         headingPopup.addItems(withTitles: ["Body", "Heading 1", "Heading 2", "Heading 3"])
         headingPopup.target = self; headingPopup.action = #selector(pickHeading(_:)); headingPopup.refusesFirstResponder = true
+        headingPopup.controlSize = .small
+        headingPopup.font = .systemFont(ofSize: 12)
         sizePopup.addItems(withTitles: ["10", "12", "14", "18", "24", "32"])
         sizePopup.selectItem(withTitle: "14")
         sizePopup.target = self; sizePopup.action = #selector(pickSize(_:)); sizePopup.refusesFirstResponder = true
-        colorWell.color = .black
+        sizePopup.controlSize = .small
+        colorWell.color = Palette.ink
+        colorWell.controlSize = .small
         colorWell.target = self; colorWell.action = #selector(pickColor(_:))
 
         let bar = NSStackView(views: [
+            symbolButton("list.bullet", #selector(bullet(_:)), title: "Bullets", tip: "Insert a bullet list"),
+            symbolButton("list.number", #selector(numbered(_:)), title: "Numbered", tip: "Insert a numbered list"),
+            symbolButton("photo", #selector(insertImage(_:)), title: "Image", tip: "Insert an image"),
+            barSeparator(),
             symbolButton("bold", #selector(bold(_:)), tip: "Bold"),
             symbolButton("italic", #selector(italic(_:)), tip: "Italic"),
             symbolButton("underline", #selector(underline(_:)), tip: "Underline"),
             symbolButton("strikethrough", #selector(strike(_:)), tip: "Strikethrough"),
             sizePopup, colorWell, headingPopup,
-            symbolButton("list.bullet", #selector(bullet(_:)), tip: "Bullets"),
-            symbolButton("list.number", #selector(numbered(_:)), tip: "Numbering"),
+            barSeparator(),
             symbolButton("text.alignleft", #selector(alignLeft(_:)), tip: "Align left"),
             symbolButton("text.aligncenter", #selector(alignCenter(_:)), tip: "Center"),
             symbolButton("text.alignright", #selector(alignRight(_:)), tip: "Align right"),
             symbolButton("increase.indent", #selector(indentMore(_:)), tip: "Indent"),
             symbolButton("decrease.indent", #selector(indentLess(_:)), tip: "Outdent"),
         ])
-        bar.spacing = 2
+        bar.spacing = 4
+        bar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        let barWell = NSView()
+        barWell.wantsLayer = true
+        barWell.layer?.backgroundColor = Palette.bar.cgColor
+        barWell.layer?.cornerRadius = 12
+        barWell.layer?.borderWidth = 1
+        barWell.layer?.borderColor = Palette.hairline.cgColor
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        barWell.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: barWell.topAnchor),
+            bar.leadingAnchor.constraint(equalTo: barWell.leadingAnchor),
+            bar.trailingAnchor.constraint(lessThanOrEqualTo: barWell.trailingAnchor),
+            bar.bottomAnchor.constraint(equalTo: barWell.bottomAnchor),
+        ])
 
         titleField.placeholderString = "Page title"
         titleField.font = .systemFont(ofSize: 22, weight: .semibold)
@@ -566,10 +626,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let paper = NSView()
         paper.wantsLayer = true
         paper.appearance = NSAppearance(named: .aqua)   // the sheet stays light so text and images stay readable
-        paper.layer?.backgroundColor = NSColor.white.cgColor
+        paper.layer?.backgroundColor = Palette.paper.cgColor
         paper.layer?.cornerRadius = 16
         let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow.shadowColor = NSColor(srgbRed: 0.35, green: 0.28, blue: 0.20, alpha: 0.18)
         shadow.shadowOffset = NSSize(width: 0, height: -4)
         shadow.shadowBlurRadius = 18
         paper.shadow = shadow
@@ -582,7 +642,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             paperStack.bottomAnchor.constraint(equalTo: paper.bottomAnchor),
         ])
 
-        let right = NSStackView(views: [bar, paper])
+        let right = NSStackView(views: [barWell, paper])
         right.orientation = .vertical
         right.alignment = .leading
         right.spacing = 10
@@ -592,7 +652,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let paperWidth = paper.widthAnchor.constraint(equalTo: right.widthAnchor)
         paperWidth.priority = NSLayoutConstraint.Priority(999)
         paperWidth.isActive = true
-        let barWidth = bar.widthAnchor.constraint(equalTo: right.widthAnchor)
+        let barWidth = barWell.widthAnchor.constraint(equalTo: right.widthAnchor)
         barWidth.priority = NSLayoutConstraint.Priority(999)
         barWidth.isActive = true
 
@@ -642,6 +702,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("Open Notebook…", #selector(openNotebook(_:)), "o", in: file)
         item("New Page", #selector(addPage(_:)), "t", in: file)
         item("Import .one…", #selector(importOne(_:)), "i", in: file)
+        let insert = submenu("Insert")
+        item("Bullet List", #selector(bullet(_:)), in: insert)
+        item("Numbered List", #selector(numbered(_:)), in: insert)
+        item("Image…", #selector(insertImage(_:)), in: insert)
         let edit = submenu("Edit")
         item("Undo", #selector(undoAction(_:)), "z", in: edit)
         item("Redo", #selector(redoAction(_:)), "z", mods: [.command, .shift], in: edit)

@@ -120,7 +120,7 @@ final class ObjectView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 8
-        handle.fill = NSColor.labelColor.withAlphaComponent(0.03)
+        handle.fill = NSColor(srgbRed: 0.45, green: 0.38, blue: 0.30, alpha: 0.05)
         addSubview(content)
         addSubview(handle)
         handle.onBegin = { [weak self] in self?.onDragBegin?() }
@@ -131,8 +131,8 @@ final class ObjectView: NSView {
 
     private func updateChrome() {
         layer?.borderWidth = isSelectedObject ? 1 : 0
-        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.75).cgColor
-        handle.fill = NSColor.labelColor.withAlphaComponent(isSelectedObject ? 0.10 : 0.03)
+        layer?.borderColor = NSColor(srgbRed: 0.38, green: 0.46, blue: 0.52, alpha: 0.85).cgColor
+        handle.fill = NSColor(srgbRed: 0.45, green: 0.38, blue: 0.30, alpha: isSelectedObject ? 0.16 : 0.05)
         handle.needsDisplay = true
     }
 

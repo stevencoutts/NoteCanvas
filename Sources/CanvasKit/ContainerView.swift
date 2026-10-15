@@ -31,6 +31,7 @@ final class BoxTextView: NSTextView {
 }
 
 final class ContainerView: NSView, NSTextViewDelegate {
+    private static let strip = NSColor(srgbRed: 0.45, green: 0.38, blue: 0.30, alpha: 1)
     let id: UUID
     let handle = DragStrip()
     let grip = DragStrip()
@@ -68,7 +69,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
         textView.delegate = self
         grip.cursor = .resizeLeftRight
         grip.fill = .clear
-        handle.fill = NSColor.labelColor.withAlphaComponent(0.03)
+        handle.fill = Self.strip.withAlphaComponent(0.05)
         handle.onBegin = { [weak self] in self?.onDragBegin?() }
         handle.onDelta = { [weak self] dx, dy in self?.onMove?(dx, dy) }
         handle.onEnd = { [weak self] in self?.onDragEnd?() }
@@ -95,14 +96,14 @@ final class ContainerView: NSView, NSTextViewDelegate {
     /// The drag strip stays almost invisible until the box is selected or being edited.
     private func updateChrome() {
         let active = isSelectedObject || isEditing
-        handle.fill = NSColor.labelColor.withAlphaComponent(active ? 0.10 : 0.03)
+        handle.fill = Self.strip.withAlphaComponent(active ? 0.16 : 0.05)
         handle.needsDisplay = true
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard isSelectedObject || isEditing else { return }
-        NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
+        NSColor(srgbRed: 0.38, green: 0.46, blue: 0.52, alpha: 0.85).setStroke()
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
         path.lineWidth = 1
         path.stroke()

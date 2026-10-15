@@ -214,6 +214,36 @@ public final class PageController {
 
     // MARK: z-order, delete, copy, paste
 
+    /// Toggles the list on the paragraph being edited, or starts a new list box when nothing is being typed.
+    public func insertList(_ list: ListStyle) {
+        if pageView.focused() != nil {
+            applyParagraph { $0.list = ($0.list == list ? .none : list) }
+            return
+        }
+        let origin = pasteOrigin()
+        let box = TextContainer(id: UUID(), frame: Frame(x: origin.x, y: origin.y, width: 320, height: 0),
+                                paragraphs: [Paragraph(runs: [], list: list)])
+        selected = box.id
+        commit { $0.add(.text(box)) }
+        pageView.focus(box.id)
+    }
+
+    /// Places images on the page, stacked where the user is looking. One undo removes them all.
+    public func addImages(_ images: [(data: Data, ext: String, pointSize: NSSize)]) {
+        let origin = pasteOrigin()
+        var y = origin.y
+        var objects: [PageObject] = []
+        for item in images {
+            guard let name = storeAsset?(item.data, item.ext) else { continue }
+            let size = fitted(item.pointSize)
+            objects.append(.image(ImageObject(id: UUID(), frame: Frame(x: origin.x, y: y, width: size.width, height: size.height), asset: name)))
+            y += size.height + 16
+        }
+        guard !objects.isEmpty else { return }
+        selected = objects.last?.id
+        commit { page in for object in objects { page.add(object) } }
+    }
+
     public func bringToFront() { if let id = selected { commit { $0.bringToFront(id) } } }
     public func sendToBack() { if let id = selected { commit { $0.sendToBack(id) } } }
 

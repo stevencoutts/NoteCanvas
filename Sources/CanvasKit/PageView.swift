@@ -36,7 +36,10 @@ final class PageView: NSView {
         fitVisibleCanvas()
     }
 
-    override func draw(_ dirtyRect: NSRect) { NSColor.white.setFill(); dirtyRect.fill() }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(srgbRed: 0.99, green: 0.975, blue: 0.955, alpha: 1).setFill()
+        dirtyRect.fill()
+    }
     override func mouseDown(with event: NSEvent) { onBackgroundClick?(convert(event.locationInWindow, from: nil)) }
 
     private func makeContent(for object: PageObject) -> ObjectContentView {
