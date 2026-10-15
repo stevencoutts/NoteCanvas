@@ -84,6 +84,9 @@ private final class AboutKeyView: NSView {
 
 public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var window: NSWindow!
+    private var sideColumn: NSView?
+    private var sheetWidth: NSLayoutConstraint?
+    private static let sidebarHiddenKey = "sidebarHidden"
     private var aboutWindow: NSPanel?
     private var package: NotebookPackage?
     private var controller: PageController?
@@ -1536,6 +1539,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             return selectedID() != nil
         }
         if item.action == #selector(encryptNotebook(_:)) { return package != nil && package?.isEncrypted == false }
+        if item.action == #selector(toggleSidebar(_:)) {
+            item.title = sidebarHidden ? "Show Sidebar" : "Hide Sidebar"
+            return true
+        }
         if item.action == #selector(changePassphrase(_:)) { return package?.isEncrypted == true }
         if item.action == #selector(lockSectionAction(_:)) || item.action == #selector(closeSectionAction(_:))
             || item.action == #selector(changeSectionPassphraseAction(_:)) || item.action == #selector(removeSectionLockAction(_:)) {
@@ -1771,6 +1778,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let rightWidth = right.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -234)
         rightWidth.priority = NSLayoutConstraint.Priority(999)
         rightWidth.isActive = true
+        sideColumn = side
+        sheetWidth = rightWidth
         glass.addSubview(root)
         NSLayoutConstraint.activate([
             root.topAnchor.constraint(equalTo: glass.safeAreaLayoutGuide.topAnchor, constant: 6),
@@ -1779,7 +1788,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             root.bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: -12),
         ])
         window.contentView = glass
+        setSidebarHidden(UserDefaults.standard.bool(forKey: Self.sidebarHiddenKey))
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private var sidebarHidden: Bool { sideColumn?.isHidden ?? false }
+
+    /// Hides or shows the whole left column, so the page gets the full width. The choice is remembered.
+    private func setSidebarHidden(_ hidden: Bool) {
+        guard let side = sideColumn else { return }
+        if hidden, window?.firstResponder is NSOutlineView { window?.makeFirstResponder(nil) }
+        side.isHidden = hidden
+        // With the column gone the sheet takes the whole width. Otherwise it leaves room for the column and the gap.
+        sheetWidth?.constant = hidden ? 0 : -234
+        UserDefaults.standard.set(hidden, forKey: Self.sidebarHiddenKey)
+        window?.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    @objc func toggleSidebar(_ sender: Any?) {
+        setSidebarHidden(!sidebarHidden)
     }
 
     /// `CFBundleShortVersionString` once this process is a bundled .app. `swift run` has no version.
@@ -1973,6 +2000,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("Paste", #selector(pasteAction(_:)), "v", in: edit)
         item("Select All", #selector(NSText.selectAll(_:)), "a", firstResponder: true, in: edit)
         item("Delete Object", #selector(deleteObject(_:)), "\u{7f}", mods: [], in: edit)
+        let view = submenu("View")
+        item("Hide Sidebar", #selector(toggleSidebar(_:)), "s", mods: [.command, .control], in: view)
         let arrange = submenu("Arrange")
         item("Bring to Front", #selector(bringToFront(_:)), "]", in: arrange)
         item("Send to Back", #selector(sendToBack(_:)), "[", in: arrange)
