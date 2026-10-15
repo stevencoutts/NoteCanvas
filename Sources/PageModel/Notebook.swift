@@ -298,10 +298,32 @@ public struct Notebook: Codable, Equatable, Sendable {
     public var version: Int
     public var name: String
     public var sections: [Section]
+    /// Counts manifest writes in an encrypted notebook so a client can spot an older copy. Always 0 in an unencrypted one,
+    /// and left out of the file then.
+    public var revision: Int
 
     public init(name: String) {
         self.version = Notebook.currentVersion
         self.name = name
         self.sections = [Section(id: UUID(), name: "Section 1", pages: [])]
+        self.revision = 0
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, name, sections, revision }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        name = try c.decode(String.self, forKey: .name)
+        sections = try c.decode([Section].self, forKey: .sections)
+        revision = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encode(name, forKey: .name)
+        try c.encode(sections, forKey: .sections)
+        if revision != 0 { try c.encode(revision, forKey: .revision) }
     }
 }

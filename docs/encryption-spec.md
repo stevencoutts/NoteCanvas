@@ -67,6 +67,8 @@ My Notes.notebook/
   assets/<stem>.nce                  one encrypted asset
 ```
 
+Page UUIDs in stored and logical paths are lower case. Import reports (`imports/`) are not written to encrypted notebooks in version 1, because the format has no object kind for them.
+
 An unencrypted notebook (today's layout, with `notebook.json` and `pages/<uuid>.json`) is a different format. A folder containing `keys.json` is an encrypted notebook. Implementations must never write plaintext pages into an encrypted notebook.
 
 ### Logical paths and stored paths
@@ -143,7 +145,7 @@ Every write draws a fresh salt and nonce. Because each write has its own derived
 
 Plaintext by kind:
 
-- Manifest and page: the same JSON the unencrypted format stores. The manifest gains an integer field `revision`, increased by one on every write.
+- Manifest and page: the same JSON the unencrypted format stores. The manifest gains an integer field `revision`, increased by one on every write after creation. It is absent while it is 0, so a freshly created notebook's manifest carries no `revision`; readers treat a missing value as 0.
 - Asset: the raw file bytes.
 
 Readers must fail the whole read on any authentication failure and must never show partial plaintext.
@@ -158,7 +160,7 @@ The ordering rules of the current format still apply: write the page file before
 - **Unlock:** read `keys.json`, derive the KEK, unwrap the key, then read `notebook.nce`.
 - **Change passphrase:** derive a new KEK, wrap the same Notebook Key into a new slot, replace the old slot. Nothing else is rewritten.
 - **Add or revoke a slot:** edit `keys.json`. Revoking a slot does not protect data from someone who already had that slot's key, because the Notebook Key is unchanged. See "Open questions".
-- **Convert an unencrypted notebook:** encrypt every file into the new layout, write `keys.json` last, verify by reading everything back, and only then offer to remove the plaintext files.
+- **Convert an unencrypted notebook:** encrypt every file into the new layout, write `keys.json` last, verify by reading everything back (and if the read-back differs, delete `keys.json` so the notebook stays unencrypted), and only then offer to move the plaintext files to the Trash. A notebook that has `keys.json` and leftover plaintext files is valid: readers use the encrypted files and may offer to remove the leftovers again.
 
 ## Versioning
 

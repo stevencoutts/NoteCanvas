@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import OneImport
 import OneStore
 import PageModel
@@ -128,6 +129,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.activate(ignoringOtherApps: true)
         if let pkg = LastNotebook.reopen() {
             use(pkg)
+        } else if let url = LastNotebook.rememberedURL(), NotebookPackage.isEncrypted(at: url), let pkg = unlockNotebook(at: url) {
+            use(pkg)
         } else {
             promptForNotebook()
         }
@@ -174,14 +177,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     @objc func newNotebook(_ sender: Any?) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "Untitled.notebook"
+        let encryptBox = NSButton(checkboxWithTitle: "Encrypt this notebook with a passphrase", target: nil, action: nil)
+        encryptBox.state = .on
+        panel.accessoryView = encryptBox
         guard panel.runModal() == .OK, let url = panel.url else { if package == nil { promptForNotebook() }; return }
         let fm = FileManager.default
         // NSSavePanel already asked about replacing, but only ever replace a notebook, never an arbitrary folder or file.
-        if fm.fileExists(atPath: url.path), !fm.fileExists(atPath: url.appendingPathComponent("notebook.json").path) {
+        if fm.fileExists(atPath: url.path), !fm.fileExists(atPath: url.appendingPathComponent("notebook.json").path),
+           !fm.fileExists(atPath: url.appendingPathComponent("keys.json").path) {
             inform("“\(url.lastPathComponent)” is not a notebook",
                    "NoteCanvas only replaces an existing notebook. Choose another name or location.")
             if package == nil { promptForNotebook() }
             return
+        }
+        var secret: (passphrase: String, remember: Bool)?
+        if encryptBox.state == .on {
+            secret = askNewPassphrase(title: "Choose a passphrase",
+                                      message: "Everything in the notebook is encrypted with it. If you forget it, the recovery key shown next is the only way back in.",
+                                      offerRemember: true)
+            if secret == nil { if package == nil { promptForNotebook() }; return }
         }
         // Save and close the open page first, so no pending write can land in the folder being replaced.
         guard saveOrDiscard("Continue") else { return }
@@ -189,9 +203,20 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         do {
             // The store itself refuses to clobber, so clear first.
             if fm.fileExists(atPath: url.path) { try fm.trashItem(at: url, resultingItemURL: nil) }
-            var pkg = try NotebookPackage.create(at: url, name: url.deletingPathExtension().lastPathComponent)
+            let name = url.deletingPathExtension().lastPathComponent
+            var recovery: String?
+            var pkg: NotebookPackage
+            if let secret {
+                let made = try NotebookPackage.createEncrypted(at: url, name: name, passphrase: secret.passphrase)
+                pkg = made.package
+                recovery = made.recoveryKey
+                if secret.remember, let cipher = pkg.cipher { NotebookKeychain.save(cipher.key, notebookID: cipher.notebookID.uuidString) }
+            } else {
+                pkg = try NotebookPackage.create(at: url, name: name)
+            }
             _ = try pkg.addPage(title: "Untitled Page")
             use(pkg)
+            if let recovery { showRecoveryKey(recovery) }
         } catch { show(error); if package == nil { promptForNotebook() } }
     }
 
@@ -201,7 +226,13 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         panel.canChooseFiles = false
         guard panel.runModal() == .OK, let url = panel.url else { if package == nil { promptForNotebook() }; return }
         do {
-            let pkg = try NotebookPackage.open(at: url)
+            let pkg: NotebookPackage
+            if NotebookPackage.isEncrypted(at: url) {
+                guard let unlocked = unlockNotebook(at: url) else { if package == nil { promptForNotebook() }; return }
+                pkg = unlocked
+            } else {
+                pkg = try NotebookPackage.open(at: url)
+            }
             guard saveOrDiscard("Continue") else { return }
             use(pkg)
         } catch { show(error); if package == nil { promptForNotebook() } }
@@ -233,6 +264,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             _ = try? p.addPage(title: "Untitled Page"); package = p; reloadPages()
         }
         if let first = pages.first { selectNav(first.id) }
+        if pkg.isEncrypted, !pkg.plaintextLeftovers().isEmpty {
+            DispatchQueue.main.async { [weak self] in self?.offerToTrashPlaintext(pkg) }
+        }
     }
 
     private func reloadPages() {
@@ -383,6 +417,161 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func show(_ error: Error) {
         let a = NSAlert(); a.messageText = "Something went wrong"; a.informativeText = "\(error)"; a.runModal()
+    }
+
+    // MARK: encryption
+
+    private func secureField(_ placeholder: String, plain: Bool = false) -> NSTextField {
+        let field: NSTextField = plain ? NSTextField() : NSSecureTextField()
+        field.placeholderString = placeholder
+        field.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        return field
+    }
+
+    private func accessory(_ views: [NSView]) -> NSView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.layoutSubtreeIfNeeded()
+        stack.setFrameSize(stack.fittingSize)
+        return stack
+    }
+
+    /// Opens an encrypted notebook: a key remembered in the keychain first, then the passphrase or recovery key.
+    private func unlockNotebook(at url: URL) -> NotebookPackage? {
+        guard let keys = try? NotebookPackage.keysFile(at: url) else { show(StoreError.notAPackage); return nil }
+        if let cached = NotebookKeychain.load(notebookID: keys.notebookId),
+           let pkg = try? NotebookPackage.open(at: url, notebookKey: cached) { return pkg }
+        var message = "Enter the passphrase for “\(url.deletingPathExtension().lastPathComponent)”."
+        var useRecovery = false
+        while true {
+            let alert = NSAlert()
+            alert.messageText = useRecovery ? "Enter the recovery key" : "Unlock notebook"
+            alert.informativeText = message
+            let field = secureField(useRecovery ? "Recovery key" : "Passphrase", plain: useRecovery)
+            let remember = NSButton(checkboxWithTitle: "Remember on this Mac", target: nil, action: nil)
+            remember.state = .on
+            alert.accessoryView = accessory([field, remember])
+            alert.addButton(withTitle: "Unlock")
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: useRecovery ? "Use Passphrase" : "Use Recovery Key…")
+            alert.window.initialFirstResponder = field
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                do {
+                    let key: SymmetricKey
+                    if useRecovery {
+                        key = try NotebookCrypto.unlock(keys, recoveryKey: field.stringValue)
+                    } else {
+                        key = try NotebookCrypto.unlock(keys, passphrase: field.stringValue)
+                    }
+                    let pkg = try NotebookPackage.open(at: url, notebookKey: key)
+                    if remember.state == .on { NotebookKeychain.save(key, notebookID: keys.notebookId) }
+                    return pkg
+                } catch CryptoError.noMatchingSlot {
+                    message = useRecovery ? "That recovery key did not unlock the notebook." : "That passphrase did not unlock the notebook. Try again."
+                } catch CryptoError.badRecoveryKey {
+                    message = "That recovery key is not valid. Check it for typing mistakes."
+                } catch {
+                    show(error)
+                    return nil
+                }
+            case .alertThirdButtonReturn:
+                useRecovery.toggle()
+                message = useRecovery ? "Type the recovery key you saved when the notebook was created." : "Enter the passphrase for “\(url.deletingPathExtension().lastPathComponent)”."
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func askNewPassphrase(title: String, message: String, offerRemember: Bool) -> (passphrase: String, remember: Bool)? {
+        var note = message
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = note
+            let first = secureField("Passphrase")
+            let second = secureField("Repeat passphrase")
+            let remember = NSButton(checkboxWithTitle: "Remember on this Mac", target: nil, action: nil)
+            remember.state = .on
+            alert.accessoryView = accessory(offerRemember ? [first, second, remember] : [first, second])
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = first
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            if first.stringValue != second.stringValue { note = "The two passphrases do not match. Try again."; continue }
+            if first.stringValue.count < NotebookCrypto.minimumPassphraseLength {
+                note = "Use at least \(NotebookCrypto.minimumPassphraseLength) characters. Several random words work well."
+                continue
+            }
+            return (first.stringValue, offerRemember && remember.state == .on)
+        }
+    }
+
+    private func showRecoveryKey(_ key: String) {
+        while true {
+            let alert = NSAlert()
+            alert.messageText = "Save your recovery key"
+            alert.informativeText = "If you forget the passphrase, this key is the only way to open the notebook. NoteCanvas cannot recover it for you, and it will not be shown again. Keep it somewhere safe, such as a password manager."
+            let field = NSTextField(wrappingLabelWithString: key)
+            field.isSelectable = true
+            field.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+            field.preferredMaxLayoutWidth = 320
+            alert.accessoryView = accessory([field])
+            alert.addButton(withTitle: "I Have Saved It")
+            alert.addButton(withTitle: "Copy Key")
+            if alert.runModal() == .alertSecondButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(key, forType: .string)
+                continue
+            }
+            return
+        }
+    }
+
+    private func offerToTrashPlaintext(_ pkg: NotebookPackage) {
+        guard !pkg.plaintextLeftovers().isEmpty else { return }
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Move the unencrypted copies to the Trash?"
+        a.informativeText = "The encrypted notebook is in use. The old unencrypted files are still on disk until you remove them. "
+            + "Emptying the Trash does not reach copies in Time Machine backups or in your cloud storage's version history."
+        a.addButton(withTitle: "Move to Trash")
+        a.addButton(withTitle: "Keep Them")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        do { try pkg.trashPlaintextLeftovers() } catch { show(error) }
+    }
+
+    @objc func encryptNotebook(_ sender: Any?) {
+        guard let current = package, !current.isEncrypted else { return }
+        commitEditing()
+        guard flushController() else {
+            inform("This page could not be saved", "Fix the problem, then try encrypting again.")
+            return
+        }
+        guard let secret = askNewPassphrase(
+            title: "Encrypt this notebook",
+            message: "Everything in “\(current.notebook.name)” is encrypted with this passphrase. If you forget it, the recovery key shown next is the only way back in.",
+            offerRemember: true) else { return }
+        guard var pkg = package else { return }
+        do {
+            let recovery = try pkg.encrypt(passphrase: secret.passphrase)
+            package = pkg
+            if secret.remember, let cipher = pkg.cipher { NotebookKeychain.save(cipher.key, notebookID: cipher.notebookID.uuidString) }
+            showRecoveryKey(recovery)
+            offerToTrashPlaintext(pkg)
+        } catch { show(error) }
+    }
+
+    @objc func changePassphrase(_ sender: Any?) {
+        guard let pkg = package, pkg.isEncrypted else { return }
+        guard let secret = askNewPassphrase(
+            title: "Change passphrase",
+            message: "The notebook is not re-encrypted. The recovery key stays the same.",
+            offerRemember: false) else { return }
+        do { try pkg.changePassphrase(to: secret.passphrase) } catch { show(error) }
     }
 
     // MARK: pages sidebar
@@ -953,6 +1142,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             if item.representedObject != nil { return true }   // right-click already targeted a folder or page
             return selectedID() != nil
         }
+        if item.action == #selector(encryptNotebook(_:)) { return package != nil && package?.isEncrypted == false }
+        if item.action == #selector(changePassphrase(_:)) { return package?.isEncrypted == true }
         guard item.action == #selector(deleteObject(_:)) else { return true }
         guard controller?.hasSelectedObject == true else { return false }
         if NSApp.currentEvent?.type == .keyDown {
@@ -1359,6 +1550,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             colorMenu.addItem(choice)
         }
         item("Import .one…", #selector(importOne(_:)), "i", in: file)
+        file.addItem(.separator())
+        item("Encrypt Notebook…", #selector(encryptNotebook(_:)), in: file)
+        item("Change Passphrase…", #selector(changePassphrase(_:)), in: file)
         let insert = submenu("Insert")
         item("Bullet List", #selector(bullet(_:)), in: insert)
         item("Numbered List", #selector(numbered(_:)), in: insert)

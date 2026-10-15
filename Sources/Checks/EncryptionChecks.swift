@@ -152,3 +152,119 @@ func encryptionChecks() {
                Data("hello".utf8), "a saved page opens")
     check(one.range(of: Data("hello".utf8)) == nil, "the plaintext is not visible in the object")
 }
+
+private func diskContains(_ needle: String, in root: URL) -> Bool {
+    let bytes = Data(needle.utf8)
+    guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return true }
+    for case let file as URL in walker {
+        if let data = try? Data(contentsOf: file), data.range(of: bytes) != nil { return true }
+    }
+    return false
+}
+
+private func storedNames(_ folder: URL) -> [String] {
+    ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
+}
+
+/// Encrypted notebooks on disk: creating, reopening, tampering, converting and changing the passphrase.
+func encryptedNotebookChecks() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-enc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let passphrase = "a long passphrase here"
+    let rounds = 100_000
+
+    // create
+    let url = root.appendingPathComponent("E.notebook")
+    let created = try! NotebookPackage.createEncrypted(at: url, name: "E", passphrase: passphrase, iterations: rounds)
+    var pkg = created.package
+    let recovery = created.recoveryKey
+    check(pkg.isEncrypted, "a new encrypted notebook reports itself encrypted")
+    checkEqual(storedNames(url), ["keys.json", "notebook.nce", "pages"], "a new encrypted notebook has only keys.json, notebook.nce and pages")
+    check(NotebookPackage.isEncrypted(at: url), "keys.json marks the folder as encrypted")
+    checkEqual(checkThrows("create over existing") { try NotebookPackage.createEncrypted(at: url, name: "x", passphrase: passphrase, iterations: rounds) } as? StoreError,
+               .alreadyExists, "creating over an existing folder is refused")
+
+    // pages, assets and the manifest never reach disk in the clear
+    var page = try! pkg.addPage(title: "Secret Title")
+    page.title = "Renamed Secret"
+    try! pkg.savePage(page)
+    checkEqual(try! pkg.loadPage(page.id), page, "an encrypted page loads back identically")
+    let assetName = try! pkg.addAsset(data: Data("PNGBYTES-secret-picture".utf8), ext: "png")
+    checkEqual(pkg.loadAsset(assetName), Data("PNGBYTES-secret-picture".utf8), "an encrypted asset loads back")
+    check(!diskContains("Secret", in: url), "no title appears in clear on disk")
+    check(!diskContains("secret-picture", in: url), "no asset bytes appear in clear on disk")
+    check(!diskContains("Section 1", in: url), "no section name appears in clear on disk")
+    check(storedNames(url.appendingPathComponent("assets")).allSatisfy { $0.hasSuffix(".nce") && !$0.contains(".png") },
+          "an encrypted asset hides its file type in the stored name")
+    check(storedNames(url.appendingPathComponent("pages")).allSatisfy { $0.hasSuffix(".nce") }, "encrypted pages are stored as .nce")
+    check(pkg.notebook.revision >= 2, "every manifest write counts in revision")
+
+    // reopen
+    checkEqual(checkThrows("open without key") { try NotebookPackage.open(at: url) } as? StoreError,
+               .encrypted, "an encrypted notebook cannot be opened without a key")
+    let keys = try! NotebookPackage.keysFile(at: url)
+    let key = try! NotebookCrypto.unlock(keys, passphrase: passphrase)
+    let reopened = try! NotebookPackage.open(at: url, notebookKey: key)
+    checkEqual(reopened.notebook, pkg.notebook, "an encrypted notebook reopens with its key")
+    checkEqual(try! reopened.loadPage(page.id), page, "a page loads after reopening")
+    let viaRecovery = try! NotebookCrypto.unlock(keys, recoveryKey: recovery)
+    check((try? NotebookPackage.open(at: url, notebookKey: viaRecovery)) != nil, "the recovery key opens the notebook")
+    checkEqual(checkThrows("wrong key") { try NotebookPackage.open(at: url, notebookKey: SymmetricKey(size: .bits256)) } as? StoreError,
+               .wrongKey, "a wrong key is refused")
+
+    // tampering
+    let pageFile = url.appendingPathComponent("pages/\(page.id.uuidString.lowercased()).nce")
+    var bytes = try! Data(contentsOf: pageFile)
+    let good = bytes
+    bytes[bytes.count - 1] ^= 1
+    try! bytes.write(to: pageFile)
+    checkEqual(checkThrows("tampered page") { try reopened.loadPage(page.id) } as? StoreError,
+               .corruptPage(page.id), "a changed page file is refused")
+    try! good.write(to: pageFile)
+    let moved = url.appendingPathComponent("pages/\(UUID().uuidString.lowercased()).nce")
+    try! good.write(to: moved)
+    let stolen = UUID(uuidString: moved.deletingPathExtension().lastPathComponent)!
+    checkEqual(checkThrows("copied page") { try reopened.loadPage(stolen) } as? StoreError,
+               .corruptPage(stolen), "a page file copied under another name is refused")
+    try! FileManager.default.removeItem(at: pageFile)
+    checkEqual(checkThrows("missing page") { try reopened.loadPage(page.id) } as? StoreError,
+               .missingPage(page.id), "a deleted page file reports missingPage")
+
+    // change the passphrase
+    try! pkg.changePassphrase(to: "a different long passphrase", iterations: rounds)
+    let changedKeys = try! NotebookPackage.keysFile(at: url)
+    check((try? NotebookCrypto.unlock(changedKeys, passphrase: "a different long passphrase")) != nil, "the new passphrase unlocks the notebook")
+    check((try? NotebookCrypto.unlock(changedKeys, passphrase: passphrase)) == nil, "the old passphrase no longer unlocks it")
+    check((try? NotebookCrypto.unlock(changedKeys, recoveryKey: recovery)) != nil, "the recovery key still unlocks it")
+
+    // convert an unencrypted notebook
+    let plainURL = root.appendingPathComponent("P.notebook")
+    var plain = try! NotebookPackage.create(at: plainURL, name: "P")
+    let folder = try! plain.addFolder(named: "Private Folder", section: 0, inFolder: nil)
+    var one = try! plain.addPage(title: "Confidential One", section: 0, inFolder: folder)
+    one.title = "Confidential One"
+    try! plain.savePage(one)
+    let two = try! plain.addPage(title: "Confidential Two")
+    let plainAsset = try! plain.addAsset(data: Data("ASSET-confidential".utf8), ext: "jpg")
+    let before = plain.notebook
+    check(diskContains("Confidential", in: plainURL), "the unencrypted notebook is readable on disk")
+
+    let recoveryKey = try! plain.encrypt(passphrase: passphrase, iterations: rounds)
+    check(plain.isEncrypted, "a converted notebook reports itself encrypted")
+    checkEqual(recoveryKey.count, 69, "conversion returns a recovery key")
+    checkEqual(plain.notebook.sections, before.sections, "conversion keeps every section, folder and page")
+    checkEqual(try! plain.loadPage(one.id), one, "a converted page loads")
+    checkEqual(try! plain.loadPage(two.id), two, "a second converted page loads")
+    checkEqual(plain.loadAsset(plainAsset), Data("ASSET-confidential".utf8), "a converted asset loads")
+    check(!plain.plaintextLeftovers().isEmpty, "the unencrypted copies are still there until they are removed")
+    let reopenedPlain = try! NotebookPackage.open(at: plainURL, notebookKey: try! NotebookCrypto.unlock(try! NotebookPackage.keysFile(at: plainURL), passphrase: passphrase))
+    checkEqual(reopenedPlain.notebook, plain.notebook, "a converted notebook reopens")
+    if (try? plain.trashPlaintextLeftovers()) != nil {
+        check(plain.plaintextLeftovers().isEmpty, "removing the unencrypted copies leaves none")
+        check(!diskContains("Confidential", in: plainURL), "nothing readable is left once the unencrypted copies are gone")
+        checkEqual(try! plain.loadPage(one.id), one, "the converted notebook still reads after cleanup")
+    }
+    checkEqual(checkThrows("convert twice") { try plain.encrypt(passphrase: passphrase, iterations: rounds) } as? StoreError,
+               .alreadyEncrypted, "an encrypted notebook cannot be converted again")
+}

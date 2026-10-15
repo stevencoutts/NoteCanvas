@@ -8,6 +8,7 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 
 - Place, move, resize, and format text boxes. Undo and redo cover those edits.
 - Organise notes as sections, folders and pages in a sidebar tree. Every section and folder folds away. Add, rename and delete sections from the sidebar buttons, the File menu, or a right-click.
+- Encrypt a notebook with a passphrase and a recovery key, when creating it or later from **File > Encrypt Notebook…**. Pages, images and the section structure are stored encrypted. The format is written down in `docs/encryption-spec.md`. There is no cloud sync yet.
 - Insert bullet and numbered lists, and insert images from disk or the clipboard.
 - Draw imported images, tables, and attachments. Move, copy, and delete them. Editing tools for tables and ink are not in this version.
 - Import a `.one` section with **File > Import .one…**. The import runs in the background and can be cancelled. The source file is only read. A failed or cancelled import does not add a section.

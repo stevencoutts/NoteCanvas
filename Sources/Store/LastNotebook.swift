@@ -31,10 +31,22 @@ public enum LastNotebook {
         }
         do {
             return try NotebookPackage.open(at: url)
+        } catch StoreError.encrypted {
+            // Opens only with a cached key. The location is kept either way, so the app can ask for the passphrase.
+            guard let keys = try? NotebookPackage.keysFile(at: url),
+                  let key = NotebookKeychain.load(notebookID: keys.notebookId),
+                  let package = try? NotebookPackage.open(at: url, notebookKey: key) else { return nil }
+            return package
         } catch {
             forget(defaults: defaults)
             return nil
         }
+    }
+
+    /// Where the last notebook was, when it still resolves. Does not open anything.
+    public static func rememberedURL(defaults: UserDefaults = .standard) -> URL? {
+        guard defaults.object(forKey: defaultsKey) != nil else { return nil }
+        return resolve(defaults: defaults)
     }
 
     private static func resolve(defaults: UserDefaults) -> URL? {
