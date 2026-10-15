@@ -65,12 +65,12 @@ public struct NotebookPackage {
     }
 
     /// Page file is written before the manifest references it, so the manifest never points at nothing.
-    public mutating func addPage(title: String, section: Int = 0) throws -> Page {
+    public mutating func addPage(title: String, section: Int = 0, inFolder folder: UUID? = nil) throws -> Page {
         guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
         let page = Page(id: UUID(), title: title, objects: [])
         try write(page)
         var updated = notebook
-        updated.sections[section].pages.append(PageRef(id: page.id, title: title))
+        updated.sections[section].addPage(PageRef(id: page.id, title: title), inFolder: folder)
         try commitManifest(updated)
         return page
     }
@@ -82,14 +82,14 @@ public struct NotebookPackage {
     }
 
     public mutating func savePage(_ page: Page) throws {
-        guard let s = notebook.sections.firstIndex(where: { $0.pages.contains { $0.id == page.id } }),
-              let p = notebook.sections[s].pages.firstIndex(where: { $0.id == page.id }) else {
+        guard let s = notebook.sections.firstIndex(where: { $0.pages.contains { $0.id == page.id } }) else {
             throw StoreError.missingPage(page.id)
         }
         try write(page)
-        if notebook.sections[s].pages[p].title != page.title {
+        let listed = notebook.sections[s].pages.first { $0.id == page.id }?.title
+        if listed != page.title {
             var updated = notebook
-            updated.sections[s].pages[p].title = page.title
+            updated.sections[s].setTitle(page.title, for: page.id)
             try commitManifest(updated)
         }
     }
@@ -101,7 +101,7 @@ public struct NotebookPackage {
     @discardableResult
     public mutating func deletePage(id: UUID) throws -> URL? {
         var updated = notebook
-        for s in updated.sections.indices { updated.sections[s].pages.removeAll { $0.id == id } }
+        for s in updated.sections.indices { updated.sections[s].removePage(id) }
         try commitManifest(updated)
         var trashed: NSURL?
         guard (try? FileManager.default.trashItem(at: pageURL(id), resultingItemURL: &trashed)) != nil else { return nil }
@@ -141,5 +141,36 @@ public struct NotebookPackage {
         updated.sections.append(section)
         try commitManifest(updated)
         return section
+    }
+
+    public mutating func addFolder(named name: String, section: Int, inFolder parent: UUID?) throws -> UUID {
+        guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
+        var updated = notebook
+        let id = updated.sections[section].addFolder(named: name, inFolder: parent)
+        try commitManifest(updated)
+        return id
+    }
+
+    public mutating func renameFolder(_ id: UUID, section: Int, to name: String) throws {
+        guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
+        var updated = notebook
+        guard updated.sections[section].renameFolder(id, to: name) else { return }
+        try commitManifest(updated)
+    }
+
+    /// The folder goes away; pages and folders that were inside it stay.
+    public mutating func dissolveFolder(_ id: UUID, section: Int) throws {
+        guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
+        var updated = notebook
+        guard updated.sections[section].dissolveFolder(id) else { return }
+        try commitManifest(updated)
+    }
+
+    public mutating func moveItem(_ id: UUID, section: Int, into parent: UUID?, at index: Int) throws -> Bool {
+        guard notebook.sections.indices.contains(section) else { throw StoreError.noSuchSection }
+        var updated = notebook
+        guard updated.sections[section].move(id: id, into: parent, at: index) else { return false }
+        try commitManifest(updated)
+        return true
     }
 }

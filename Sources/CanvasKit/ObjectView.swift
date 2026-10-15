@@ -110,9 +110,16 @@ final class ObjectView: NSView {
     let handle = DragStrip()
     var onDragBegin: (() -> Void)?
     var onMove: ((Double, Double) -> Void)?
+    var onResize: ((ImageCorner, Double, Double) -> Void)?
     var onDragEnd: (() -> Void)?
     var isSelectedObject = false { didSet { updateChrome() } }
+    /// Images grow and shrink from their corners. Tables and attachments do not.
+    var cornersEnabled = false { didSet { updateChrome() } }
     override var isFlipped: Bool { true }
+    private let corners: [(ImageCorner, DragStrip)] = [
+        (.topLeft, DragStrip()), (.topRight, DragStrip()),
+        (.bottomLeft, DragStrip()), (.bottomRight, DragStrip()),
+    ]
 
     init(id: UUID, content: ObjectContentView) {
         self.id = id
@@ -126,6 +133,16 @@ final class ObjectView: NSView {
         handle.onBegin = { [weak self] in self?.onDragBegin?() }
         handle.onDelta = { [weak self] dx, dy in self?.onMove?(dx, dy) }
         handle.onEnd = { [weak self] in self?.onDragEnd?() }
+        for (corner, knob) in corners {
+            knob.cursor = .crosshair
+            knob.followsPointer = true
+            knob.fill = .clear
+            knob.onBegin = { [weak self] in self?.onDragBegin?() }
+            knob.onDelta = { [weak self] dx, dy in self?.onResize?(corner, dx, dy) }
+            knob.onEnd = { [weak self] in self?.onDragEnd?() }
+            addSubview(knob)
+        }
+        updateChrome()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -134,12 +151,26 @@ final class ObjectView: NSView {
         layer?.borderColor = NSColor(srgbRed: 0.38, green: 0.46, blue: 0.52, alpha: 0.85).cgColor
         handle.fill = NSColor(srgbRed: 0.45, green: 0.38, blue: 0.30, alpha: isSelectedObject ? 0.16 : 0.05)
         handle.needsDisplay = true
+        for (_, knob) in corners {
+            knob.isHidden = !cornersEnabled
+            knob.alphaValue = isSelectedObject ? 1 : 0
+        }
     }
 
     override func layout() {
         super.layout()
         content.frame = bounds
         handle.frame = NSRect(x: 0, y: 0, width: bounds.width, height: min(Metrics.handleHeight, bounds.height))
+        let side = 16.0
+        let spots: [ImageCorner: NSPoint] = [
+            .topLeft: NSPoint(x: 0, y: 0),
+            .topRight: NSPoint(x: bounds.width - side, y: 0),
+            .bottomLeft: NSPoint(x: 0, y: bounds.height - side),
+            .bottomRight: NSPoint(x: bounds.width - side, y: bounds.height - side),
+        ]
+        for (corner, knob) in corners {
+            knob.frame = NSRect(origin: spots[corner] ?? .zero, size: NSSize(width: side, height: side))
+        }
     }
 
     /// A click on the content selects the object, exactly like grabbing the strip without moving.

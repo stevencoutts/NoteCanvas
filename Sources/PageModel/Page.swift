@@ -11,6 +11,10 @@ public extension TextMeasuring {
     func textHeight(of paragraphs: [Paragraph], width: Double) -> Double { height(of: paragraphs, width: width) }
 }
 
+public enum ImageCorner: Sendable {
+    case topLeft, topRight, bottomLeft, bottomRight
+}
+
 public enum PageObject: Codable, Equatable, Sendable {
     case text(TextContainer)
     case image(ImageObject)
@@ -104,6 +108,63 @@ public struct Page: Codable, Equatable, Sendable {
 
     public mutating func resize(_ id: UUID, width: Double) {
         updateText(id) { $0.frame.width = max(width, Page.minContainerWidth) }
+    }
+
+    /// Replaces an image's frame. Text, tables and attachments are left alone.
+    public mutating func setImageFrame(_ id: UUID, _ frame: Frame) {
+        guard let i = index(of: id), case .image(var image) = objects[i] else { return }
+        image.frame = frame
+        objects[i] = .image(image)
+    }
+
+    /// A point near `(nearX, nearY)` where a `width`×`height` rectangle misses every object by `gap`.
+    /// It steps below the lowest object it would cover, then tries again.
+    public func clearOrigin(width: Double, height: Double, nearX: Double, nearY: Double, gap: Double = 16) -> (x: Double, y: Double) {
+        Self.clearOrigin(width: width, height: height, nearX: nearX, nearY: nearY, gap: gap, avoiding: objects.map(\.frame))
+    }
+
+    public static func clearOrigin(width: Double, height: Double, nearX: Double, nearY: Double, gap: Double = 16, avoiding frames: [Frame]) -> (x: Double, y: Double) {
+        var y = nearY
+        for _ in 0...frames.count {
+            let candidate = Frame(x: nearX, y: y, width: width, height: height)
+            let blockers = frames.filter { overlaps($0, candidate, gap: gap) }
+            guard let lowest = blockers.max(by: { ($0.y + $0.height) < ($1.y + $1.height) }) else { return (nearX, y) }
+            y = lowest.y + lowest.height + gap
+        }
+        return (nearX, y)
+    }
+
+    /// The dragged corner follows the pointer. The opposite corner stays put, and the picture keeps its proportions.
+    public static func scaledImageFrame(_ start: Frame, corner: ImageCorner, dx: Double, dy: Double, minimum: Double = 32) -> Frame {
+        let growX: Double
+        let growY: Double
+        switch corner {
+        case .bottomRight: growX = dx; growY = dy
+        case .bottomLeft: growX = -dx; growY = dy
+        case .topRight: growX = dx; growY = -dy
+        case .topLeft: growX = -dx; growY = -dy
+        }
+        let scaleX = (start.width + growX) / max(start.width, 1)
+        let scaleY = (start.height + growY) / max(start.height, 1)
+        var scale = abs(growX) >= abs(growY) ? scaleX : scaleY
+        let minScale = max(minimum / max(start.width, 1), minimum / max(start.height, 1))
+        if scale < minScale { scale = minScale }
+        let width = start.width * scale
+        let height = start.height * scale
+        switch corner {
+        case .bottomRight:
+            return Frame(x: start.x, y: start.y, width: width, height: height)
+        case .bottomLeft:
+            return Frame(x: start.x + start.width - width, y: start.y, width: width, height: height)
+        case .topRight:
+            return Frame(x: start.x, y: start.y + start.height - height, width: width, height: height)
+        case .topLeft:
+            return Frame(x: start.x + start.width - width, y: start.y + start.height - height, width: width, height: height)
+        }
+    }
+
+    private static func overlaps(_ a: Frame, _ b: Frame, gap: Double) -> Bool {
+        a.x < b.x + b.width + gap && b.x < a.x + a.width + gap && a.y < b.y + b.height + gap && b.y < a.y + a.height + gap
     }
 
     public mutating func setParagraphs(_ id: UUID, _ paragraphs: [Paragraph]) {

@@ -152,3 +152,64 @@ func assetAndSectionChecks() {
         checkEqual(try! NotebookPackage.open(at: pkg.url).notebook, before, "…and the manifest on disk")
     }
 }
+
+func lastNotebookChecks() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "NoteCanvas.checks.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    check(LastNotebook.reopen(defaults: defaults) == nil, "nothing is restored when no notebook was open")
+
+    let first = root.appendingPathComponent("A.notebook")
+    let second = root.appendingPathComponent("B.notebook")
+    _ = try! NotebookPackage.create(at: first, name: "A")
+    _ = try! NotebookPackage.create(at: second, name: "B")
+    LastNotebook.remember(first, defaults: defaults)
+    LastNotebook.remember(second, defaults: defaults)
+    checkEqual(LastNotebook.reopen(defaults: defaults)?.url.resolvingSymlinksInPath().standardizedFileURL,
+               second.resolvingSymlinksInPath().standardizedFileURL,
+               "the notebook left open is the one restored")
+
+    let moved = root.appendingPathComponent("B2.notebook")
+    try! FileManager.default.moveItem(at: second, to: moved)
+    checkEqual(LastNotebook.reopen(defaults: defaults)?.url.resolvingSymlinksInPath().standardizedFileURL,
+               moved.resolvingSymlinksInPath().standardizedFileURL,
+               "a renamed notebook folder still opens")
+    check(defaults.object(forKey: LastNotebook.defaultsKey) != nil, "a notebook that opens stays remembered")
+
+    LastNotebook.forget(defaults: defaults)
+    check(LastNotebook.reopen(defaults: defaults) == nil, "a closed notebook is not restored")
+
+    LastNotebook.remember(moved, defaults: defaults)
+    try! FileManager.default.removeItem(at: moved)
+    check(LastNotebook.reopen(defaults: defaults) == nil, "a missing folder is not restored")
+    check(defaults.object(forKey: LastNotebook.defaultsKey) == nil, "a missing folder clears the remembered location")
+    check(LastNotebook.reopen(defaults: defaults) == nil, "a cleared location is not tried again")
+
+    let future = root.appendingPathComponent("future.notebook")
+    try! FileManager.default.createDirectory(at: future, withIntermediateDirectories: true)
+    try! Data(#"{"version":99}"#.utf8).write(to: future.appendingPathComponent("notebook.json"))
+    LastNotebook.remember(future, defaults: defaults)
+    check(LastNotebook.reopen(defaults: defaults) == nil, "a wrong version is not restored")
+    check(defaults.object(forKey: LastNotebook.defaultsKey) == nil, "a wrong version clears the remembered location")
+
+    let plain = root.appendingPathComponent("plain")
+    try! FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+    LastNotebook.remember(plain, defaults: defaults)
+    check(LastNotebook.reopen(defaults: defaults) == nil, "a folder that will not open is not restored")
+    check(defaults.object(forKey: LastNotebook.defaultsKey) == nil, "a folder that will not open clears the remembered location")
+
+    if getuid() != 0 {
+        let locked = root.appendingPathComponent("locked.notebook")
+        _ = try! NotebookPackage.create(at: locked, name: "L")
+        LastNotebook.remember(locked, defaults: defaults)
+        chmod(locked.path, 0)
+        let restored = LastNotebook.reopen(defaults: defaults)
+        chmod(locked.path, 0o755)
+        check(restored == nil, "an unreadable folder is not restored")
+        check(defaults.object(forKey: LastNotebook.defaultsKey) == nil, "an unreadable folder clears the remembered location")
+    }
+}

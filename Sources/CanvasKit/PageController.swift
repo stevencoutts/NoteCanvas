@@ -54,10 +54,17 @@ public final class PageController {
     }
 
     /// Images, tables and attachments move, select, copy, delete and reorder like text boxes; their content is read-only.
+    /// An image also resizes from any corner, keeping its proportions.
     private func wireObject(_ v: ObjectView) {
         let id = v.id
+        if case .image? = page.objects.first(where: { $0.id == id }) { v.cornersEnabled = true }
         v.onDragBegin = { [weak self] in self?.beginDrag(id) }
         v.onMove = { [weak self] dx, dy in self?.drag { $0.move(id, dx: dx, dy: dy) } }
+        v.onResize = { [weak self] corner, dx, dy in
+            guard let self, let start = self.dragStart, case .image(let image)? = start.objects.first(where: { $0.id == id }) else { return }
+            let frame = Page.scaledImageFrame(image.frame, corner: corner, dx: dx, dy: dy)
+            self.drag { $0.setImageFrame(id, frame) }
+        }
         v.onDragEnd = { [weak self] in self?.endDrag() }
     }
 
@@ -228,16 +235,14 @@ public final class PageController {
         pageView.focus(box.id)
     }
 
-    /// Places images on the page, stacked where the user is looking. One undo removes them all.
+    /// Places images on the page, stacked in open space. One undo removes them all.
     public func addImages(_ images: [(data: Data, ext: String, pointSize: NSSize)]) {
-        let origin = pasteOrigin()
-        var y = origin.y
         var objects: [PageObject] = []
         for item in images {
             guard let name = storeAsset?(item.data, item.ext) else { continue }
             let size = fitted(item.pointSize)
-            objects.append(.image(ImageObject(id: UUID(), frame: Frame(x: origin.x, y: y, width: size.width, height: size.height), asset: name)))
-            y += size.height + 16
+            objects.append(placed(.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name)),
+                                  reserved: objects.map(\.frame)))
         }
         guard !objects.isEmpty else { return }
         selected = objects.last?.id
@@ -279,20 +284,15 @@ public final class PageController {
         let pasteboard = NSPasteboard.general
         if let data = pasteboard.data(forType: Self.pasteboardType),
            let object = try? JSONDecoder().decode(PageObject.self, from: data) {
-            let copy = object.duplicated(dx: 20, dy: 20)
+            var copy = object.duplicated(dx: 20, dy: 20)
+            if case .image = copy { copy = placed(copy, reserved: []) }
             selected = copy.id
             commit { $0.add(copy) }
             return
         }
         var objects: [PageObject] = []
-        let origin = pasteOrigin()
-        var y = origin.y
         func place(_ object: PageObject) {
-            var placed = object
-            placed.frame.x = origin.x
-            placed.frame.y = y
-            y += placed.frame.height + 16
-            objects.append(placed)
+            objects.append(placed(object, reserved: objects.map(\.frame)))
         }
         for image in pastedImages(pasteboard) {
             guard let data = pngData(image), let name = storeAsset?(data, "png") else { continue }
@@ -320,12 +320,31 @@ public final class PageController {
             let paragraphs = text.split(separator: "\n", omittingEmptySubsequences: false).map {
                 Paragraph(runs: [Run(text: String($0), style: RunStyle())])
             }
+            let origin = pasteOrigin()
             objects = [.text(TextContainer(id: UUID(), frame: Frame(x: origin.x, y: origin.y, width: 360, height: 0),
                                             paragraphs: paragraphs))]
         }
         guard !objects.isEmpty else { return }
         selected = objects.last?.id
         commit { page in for object in objects { page.add(object) } }
+    }
+
+    /// An image lands where the user is looking, below anything it would cover. Anything else stacks from that spot.
+    private func placed(_ object: PageObject, reserved: [Frame]) -> PageObject {
+        let origin = pasteOrigin()
+        var placed = object
+        if case .image = object {
+            let spot = Page.clearOrigin(width: object.frame.width, height: object.frame.height,
+                                         nearX: origin.x, nearY: origin.y,
+                                         avoiding: page.objects.map(\.frame) + reserved)
+            placed.frame.x = spot.x
+            placed.frame.y = spot.y
+        } else {
+            let y = reserved.map { $0.y + $0.height + 16 }.max() ?? origin.y
+            placed.frame.x = origin.x
+            placed.frame.y = y
+        }
+        return placed
     }
 
     private func pasteOrigin() -> (x: Double, y: Double) {

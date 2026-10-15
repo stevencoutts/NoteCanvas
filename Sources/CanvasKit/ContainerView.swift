@@ -2,20 +2,41 @@ import AppKit
 import PageModel
 
 /// A thin strip that reports total mouse movement since mouse-down.
+/// `followsPointer` reports the drag in the page's flipped coordinates, from the mouse-down point, and draws a knob.
 final class DragStrip: NSView {
     var cursor: NSCursor = .openHand
     var fill: NSColor = NSColor.black.withAlphaComponent(0.06)
+    var followsPointer = false
     var onBegin: (() -> Void)?
     var onDelta: ((Double, Double) -> Void)?
     var onEnd: (() -> Void)?
     private var total = NSPoint.zero
+    private var anchor = NSPoint.zero
 
     override func resetCursorRects() { addCursorRect(bounds, cursor: cursor) }
-    override func draw(_ dirtyRect: NSRect) { fill.setFill(); bounds.fill() }
-    override func mouseDown(with event: NSEvent) { total = .zero; onBegin?() }
+    override func draw(_ dirtyRect: NSRect) {
+        guard followsPointer else { fill.setFill(); bounds.fill(); return }
+        let knob = bounds.insetBy(dx: 3, dy: 3)
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: knob).fill()
+        NSColor(srgbRed: 0.38, green: 0.46, blue: 0.52, alpha: 1).setStroke()
+        let ring = NSBezierPath(ovalIn: knob.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1.5
+        ring.stroke()
+    }
+    override func mouseDown(with event: NSEvent) {
+        anchor = event.locationInWindow
+        total = .zero
+        onBegin?()
+    }
     override func mouseDragged(with event: NSEvent) {
-        total.x += event.deltaX; total.y += event.deltaY
-        onDelta?(Double(total.x), Double(total.y))
+        if followsPointer {
+            let point = event.locationInWindow
+            onDelta?(Double(point.x - anchor.x), Double(anchor.y - point.y))
+        } else {
+            total.x += event.deltaX; total.y += event.deltaY
+            onDelta?(Double(total.x), Double(total.y))
+        }
     }
     override func mouseUp(with event: NSEvent) { onEnd?() }
 }

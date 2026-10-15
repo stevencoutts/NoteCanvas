@@ -139,6 +139,7 @@ func modelChecks() {
     pageOpChecks()
     historyChecks()
     objectChecks()
+    folderChecks()
 }
 
 func objectChecks() {
@@ -171,6 +172,35 @@ func objectChecks() {
     page.resize(img.id, width: 500)
     checkEqual(page, beforeResize, "resize still applies to text containers only")
 
+    let start = Frame(x: 10, y: 20, width: 200, height: 100)
+    checkEqual(Page.scaledImageFrame(start, corner: .bottomRight, dx: 100, dy: 10),
+               Frame(x: 10, y: 20, width: 300, height: 150), "the corner that moves farther sets the scale")
+    checkEqual(Page.scaledImageFrame(start, corner: .topLeft, dx: -100, dy: -10),
+               Frame(x: -90, y: -30, width: 300, height: 150), "the opposite corner stays put")
+    let tiny = Page.scaledImageFrame(start, corner: .bottomRight, dx: -190, dy: 0)
+    checkEqual(tiny.width, 64, "an image cannot shrink below 32 on its short side")
+    checkEqual(tiny.height, 32, "the short side is the minimum")
+    page.setImageFrame(img.id, tiny)
+    guard case .image(let resized)? = page.objects.first(where: { $0.id == img.id }) else { return }
+    checkEqual(resized.frame, tiny, "setImageFrame updates an image")
+    let beforeFrame = page
+    page.setImageFrame(tbl.id, tiny)
+    checkEqual(page, beforeFrame, "setImageFrame leaves a table alone")
+    page.setImageFrame(img.id, Frame(x: 15, y: 1, width: 100, height: 50))
+
+    var crowded = Page(id: UUID(), title: "t", objects: [
+        .text(TextContainer(id: UUID(), frame: Frame(x: 40, y: 40, width: 200, height: 100), paragraphs: [])),
+    ])
+    let blocked = crowded.clearOrigin(width: 80, height: 60, nearX: 48, nearY: 48)
+    checkEqual(blocked.x, 48, "a pasted image keeps its horizontal place")
+    checkEqual(blocked.y, 156, "a pasted image drops below the box it would cover")
+    let open = crowded.clearOrigin(width: 40, height: 40, nearX: 400, nearY: 400)
+    checkEqual(open.x, 400, "a clear spot is used as-is")
+    checkEqual(open.y, 400, "a clear spot keeps its vertical place")
+    crowded.add(.text(TextContainer(id: UUID(), frame: Frame(x: 40, y: 156, width: 80, height: 40), paragraphs: [])))
+    let lower = crowded.clearOrigin(width: 80, height: 60, nearX: 48, nearY: 48)
+    checkEqual(lower.y, 212, "it steps past every box it would cover")
+
     // Table height and width are derived: FixedLineMeasurer gives 20 per paragraph, padding is 4 each side.
     checkEqual(tbl.rowHeights(using: FixedLineMeasurer()), [28, 28], "row height = max(minimum, tallest cell + padding)")
     page.relayout(using: FixedLineMeasurer())
@@ -194,4 +224,33 @@ func objectChecks() {
     check(n1 != AssetName.make(ext: "PNG"), "names are unique")
 
     checkEqual(Paragraph.headingScales, [1, 1.8, 1.4, 1.2], "heading scales live in PageModel")
+}
+
+func folderChecks() {
+    let pageID = UUID(), sectionID = UUID()
+    let old = """
+    {"version":1,"name":"n","sections":[{"id":"\(sectionID.uuidString)","name":"S","pages":[{"id":"\(pageID.uuidString)","title":"Kept"}]}]}
+    """
+    let decoded = try! JSONDecoder().decode(Notebook.self, from: Data(old.utf8))
+    checkEqual(decoded.sections[0].pages.map(\.title), ["Kept"], "a notebook saved before folders still lists its pages")
+
+    var section = Section(id: UUID(), name: "S", pages: [PageRef(id: pageID, title: "Kept")])
+    let work = section.addFolder(named: "Work", inFolder: nil)
+    let nested = section.addFolder(named: "Later", inFolder: work)
+    let moved = UUID()
+    section.addPage(PageRef(id: moved, title: "Inside"), inFolder: work)
+    checkEqual(section.pages.map(\.title), ["Kept", "Inside"], "pages inside folders stay in the flat list")
+    check(section.move(id: moved, into: nested, at: 0), "a page can move into a subfolder")
+    checkEqual(section.folder(nested)?.children.map(\.id), [moved], "the page landed in the subfolder")
+    check(!section.move(id: work, into: nested, at: 0), "a folder cannot move into its own subfolder")
+    check(section.folder(work)?.children.contains { $0.id == nested } == true, "the rejected move leaves the tree alone")
+    check(section.move(id: nested, into: nil, at: 0), "a subfolder can move to the top of the section")
+    checkEqual(section.items.first?.id, nested, "it is now the first item")
+    check(section.dissolveFolder(work), "removing a folder keeps what was inside it")
+    check(section.pages.contains { $0.id == moved }, "the page is still in the section")
+    check(section.folder(work) == nil, "the folder itself is gone")
+
+    let again = try! JSONDecoder().decode(Section.self, from: JSONEncoder().encode(section))
+    checkEqual(again, section, "folders round-trip through JSON")
+    checkEqual(again.pages.map(\.id), section.pages.map(\.id), "the flat page list is written beside the tree")
 }

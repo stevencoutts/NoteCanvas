@@ -5,7 +5,12 @@ import PageModel
 import Store
 import UniformTypeIdentifiers
 
-public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
+private final class SidebarRow: NSObject {
+    let id: UUID
+    init(id: UUID) { self.id = id; super.init() }
+}
+
+public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var package: NotebookPackage?
     private var controller: PageController?
@@ -19,7 +24,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var importCancel: ImportCancelFlag?
     private var progressSheet: NSPanel?
 
-    private let table = NSTableView()
+    private let outline = NSOutlineView()
+    private var navRows: [UUID: SidebarRow] = [:]
+    private let navType = NSPasteboard.PasteboardType("com.notecanvas.nav")
     private let canvasScroll = NSScrollView()
     private let titleField = NSTextField()
     private let headingPopup = NSPopUpButton()
@@ -34,7 +41,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         buildMenu()
         buildWindow()
         NSApp.activate(ignoringOtherApps: true)
-        promptForNotebook()
+        if let pkg = LastNotebook.reopen() {
+            use(pkg)
+        } else {
+            promptForNotebook()
+        }
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -96,11 +107,12 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func closeNotebook() {
+        LastNotebook.forget()
         dropPage()
         package = nil
         currentSection = 0
         rebuildSectionPopup()
-        table.deselectAll(nil)
+        outline.deselectAll(nil)
         reloadPages()
         window.title = "NoteCanvas"
     }
@@ -110,8 +122,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         _ = flushController()
         // Drop the old page's controller/view and selection so the selection change below always fires and loads once.
         dropPage()
-        table.deselectAll(nil)
+        outline.deselectAll(nil)
         package = pkg
+        LastNotebook.remember(pkg.url)
         currentSection = 0
         rebuildSectionPopup()
         window.title = pkg.notebook.name
@@ -119,14 +132,17 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if pages.isEmpty, var p = package {
             _ = try? p.addPage(title: "Untitled Page"); package = p; reloadPages()
         }
-        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        if let first = pages.first { selectNav(first.id) }
     }
 
     private func reloadPages() {
         let sections = package?.notebook.sections ?? []
         if !sections.indices.contains(currentSection) { currentSection = 0 }
         pages = sections.indices.contains(currentSection) ? sections[currentSection].pages : []
-        table.reloadData()
+        let live = Set(currentItems().flatMap { Self.itemIDs($0) })
+        navRows = navRows.filter { live.contains($0.key) }
+        outline.reloadData()
+        outline.expandItem(nil, expandChildren: true)
     }
 
     /// The popup lists section names; duplicate names are allowed, so items are added to the menu directly.
@@ -143,9 +159,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard index >= 0, index != currentSection, saveOrDiscard("Continue") else { rebuildSectionPopup(); return }
         currentSection = index
         dropPage()
-        table.deselectAll(nil)
+        outline.deselectAll(nil)
         reloadPages()
-        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        if let first = pages.first { selectNav(first.id) }
     }
 
     private func showPage(_ id: UUID) {
@@ -153,11 +169,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         commitEditing()
         if let current = controller, !flushController() {
             // Keep the unsaved page on screen (and its row selected) rather than dropping its edits.
-            if let row = pages.firstIndex(where: { $0.id == current.page.id }) {
-                revertingSelection = true
-                table.selectRowIndexes([row], byExtendingSelection: false)
-                revertingSelection = false
-            }
+            revertingSelection = true
+            selectNav(current.page.id)
+            revertingSelection = false
             inform("This page could not be saved", "\(describe(lastSaveError))\n\nIt stays open so your changes are not lost. "
                    + "Fix the problem (for example, move the notebook back or free some disk space) and try again.")
             return
@@ -222,7 +236,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             window.title = package?.notebook.name ?? ""
             if let i = pages.firstIndex(where: { $0.id == page.id }), pages[i].title != page.title {
                 pages[i].title = page.title
-                table.reloadData(forRowIndexes: [i], columnIndexes: [0])
+                if let row = navRows[page.id] { outline.reloadItem(row) }
             }
             return true
         } catch {
@@ -249,33 +263,204 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     // MARK: pages sidebar
 
-    public func numberOfRows(in tableView: NSTableView) -> Int { pages.count }
+    private func currentSectionModel() -> Section? {
+        guard let sections = package?.notebook.sections, sections.indices.contains(currentSection) else { return nil }
+        return sections[currentSection]
+    }
 
-    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let cell = NSTextField(labelWithString: pages[row].title)
-        cell.lineBreakMode = .byTruncatingTail
-        cell.font = .systemFont(ofSize: 13)
-        cell.textColor = .labelColor
+    private func currentItems() -> [NotebookItem] { currentSectionModel()?.items ?? [] }
+
+    private func navRow(_ id: UUID) -> SidebarRow {
+        if let row = navRows[id] { return row }
+        let row = SidebarRow(id: id)
+        navRows[id] = row
+        return row
+    }
+
+    private func children(of item: Any?) -> [NotebookItem] {
+        guard let section = currentSectionModel() else { return [] }
+        guard let row = item as? SidebarRow else { return section.items }
+        return section.folder(row.id)?.children ?? []
+    }
+
+    private func selectedID() -> UUID? { (outline.item(atRow: outline.selectedRow) as? SidebarRow)?.id }
+
+    /// A selected folder, or the folder that holds the selected page.
+    private func destinationFolder() -> UUID? {
+        guard let id = selectedID(), let section = currentSectionModel() else { return nil }
+        if section.folder(id) != nil { return id }
+        return section.parent(of: id)
+    }
+
+    private func selectNav(_ id: UUID) {
+        let row = outline.row(forItem: navRow(id))
+        guard row >= 0 else { return }
+        outline.selectRowIndexes([row], byExtendingSelection: false)
+    }
+
+    private static func itemIDs(_ item: NotebookItem) -> [UUID] {
+        switch item {
+        case .page: return [item.id]
+        case .folder(let folder): return [folder.id] + folder.children.flatMap { itemIDs($0) }
+        }
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        children(of: item).count
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        navRow(children(of: item)[index].id)
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        guard let row = item as? SidebarRow else { return false }
+        return currentSectionModel()?.folder(row.id) != nil
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let row = item as? SidebarRow, let section = currentSectionModel() else { return nil }
+        let folder = section.folder(row.id)
+        let title = folder?.name ?? section.pages.first { $0.id == row.id }?.title ?? ""
+        let cell = (outlineView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("nav"), owner: self) as? NSTableCellView) ?? NSTableCellView()
+        cell.identifier = NSUserInterfaceItemIdentifier("nav")
+        if cell.textField == nil {
+            let text = NSTextField(labelWithString: "")
+            text.translatesAutoresizingMaskIntoConstraints = false
+            text.lineBreakMode = .byTruncatingTail
+            text.drawsBackground = false
+            text.isBordered = false
+            text.isBezeled = false
+            text.focusRingType = .none
+            (text.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = true
+            cell.addSubview(text)
+            cell.textField = text
+            NSLayoutConstraint.activate([
+                text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+        }
+        cell.textField?.stringValue = title
+        cell.textField?.font = .systemFont(ofSize: 13, weight: folder == nil ? .regular : .semibold)
+        cell.textField?.textColor = Palette.ink
+        cell.textField?.isEditable = folder != nil
+        cell.textField?.target = folder == nil ? nil : self
+        cell.textField?.action = folder == nil ? nil : #selector(commitFolderName(_:))
+        cell.textField?.identifier = NSUserInterfaceItemIdentifier(row.id.uuidString)
         return cell
     }
 
-    public func tableViewSelectionDidChange(_ notification: Notification) {
-        let row = table.selectedRow
-        if pages.indices.contains(row) { showPage(pages[row].id) }
+    public func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !revertingSelection, let id = selectedID(), currentSectionModel()?.folder(id) == nil else { return }
+        showPage(id)
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
+        guard let row = item as? SidebarRow else { return nil }
+        let writer = NSPasteboardItem()
+        writer.setString(row.id.uuidString, forType: navType)
+        return writer
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+        guard let moving = draggedNavID(info), let section = currentSectionModel() else { return [] }
+        if let row = item as? SidebarRow, section.folder(row.id) == nil {
+            let parent = section.parent(of: row.id)
+            let siblings = parent.flatMap { section.folder($0)?.children } ?? section.items
+            let at = (siblings.firstIndex { $0.id == row.id } ?? siblings.count - 1) + 1
+            outlineView.setDropItem(parent.map { navRow($0) }, dropChildIndex: at)
+            return .move
+        }
+        if let parent = (item as? SidebarRow)?.id, nests(moving, inside: parent, section: section) { return [] }
+        return .move
+    }
+
+    public func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        guard var pkg = package, let id = draggedNavID(info) else { return false }
+        let parent = (item as? SidebarRow)?.id
+        let at = index == NSOutlineViewDropOnItemIndex ? Int.max : index
+        do {
+            guard try pkg.moveItem(id, section: currentSection, into: parent, at: at) else { return false }
+            package = pkg
+            reloadPages()
+            selectNav(id)
+            return true
+        } catch { show(error); return false }
+    }
+
+    private func draggedNavID(_ info: NSDraggingInfo) -> UUID? {
+        guard let raw = info.draggingPasteboard.string(forType: navType) else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    private func nests(_ id: UUID, inside parent: UUID, section: Section) -> Bool {
+        if parent == id { return true }
+        var cursor: UUID? = parent
+        while let current = cursor {
+            if current == id { return true }
+            cursor = section.parent(of: current)
+        }
+        return false
     }
 
     @objc func addPage(_ sender: Any?) {
         commitEditing()
         guard var pkg = package else { return }
-        do { _ = try pkg.addPage(title: "Untitled Page", section: currentSection); package = pkg; reloadPages()
-             table.selectRowIndexes([pages.count - 1], byExtendingSelection: false)
+        do {
+            let page = try pkg.addPage(title: "Untitled Page", section: currentSection, inFolder: destinationFolder())
+            package = pkg
+            reloadPages()
+            selectNav(page.id)
+        } catch { show(error) }
+    }
+
+    @objc func addFolder(_ sender: Any?) {
+        commitEditing()
+        guard var pkg = package else { return }
+        do {
+            let id = try pkg.addFolder(named: "New Folder", section: currentSection, inFolder: destinationFolder())
+            package = pkg
+            reloadPages()
+            selectNav(id)
+            outline.editColumn(0, row: outline.selectedRow, with: nil, select: true)
+        } catch { show(error) }
+    }
+
+    @objc func renameFolder(_ sender: Any?) {
+        guard let id = selectedID(), currentSectionModel()?.folder(id) != nil, outline.selectedRow >= 0 else { return }
+        outline.editColumn(0, row: outline.selectedRow, with: nil, select: true)
+    }
+
+    @objc func commitFolderName(_ sender: NSTextField) {
+        guard let raw = sender.identifier?.rawValue, let id = UUID(uuidString: raw), var pkg = package else { return }
+        let trimmed = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.isEmpty ? "Folder" : trimmed
+        do {
+            try pkg.renameFolder(id, section: currentSection, to: name)
+            package = pkg
+            if let row = navRows[id] { outline.reloadItem(row) }
         } catch { show(error) }
     }
 
     @objc func removePage(_ sender: Any?) {
         commitEditing()
-        guard var pkg = package, pages.indices.contains(table.selectedRow) else { return }
-        let ref = pages[table.selectedRow]
+        guard var pkg = package, let id = selectedID(), let section = currentSectionModel() else { return }
+        if section.folder(id) != nil {
+            let name = section.folder(id)?.name ?? "Folder"
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "Remove “\(name)”?"
+            a.informativeText = "Pages and folders inside it stay in this section."
+            a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Remove Folder").hasDestructiveAction = true
+            guard a.runModal() == .alertSecondButtonReturn else { return }
+            do { try pkg.dissolveFolder(id, section: currentSection) } catch { show(error); return }
+            package = pkg
+            reloadPages()
+            return
+        }
+        guard let ref = section.pages.first(where: { $0.id == id }) else { return }
         let a = NSAlert()
         a.alertStyle = .warning
         a.messageText = "Delete “\(controller?.page.id == ref.id ? controller!.page.title : ref.title)”?"
@@ -286,12 +471,15 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         do { try pkg.deletePage(id: ref.id) } catch { show(error); return }
         package = pkg
         if controller?.page.id == ref.id { dropPage() }   // no flush: the page is gone
-        table.deselectAll(nil)
+        outline.deselectAll(nil)
         reloadPages()
-        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        if let first = pages.first { selectNav(first.id) }
     }
 
-    public func controlTextDidEndEditing(_ obj: Notification) { controller?.setTitle(titleField.stringValue) }
+    public func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === titleField else { return }
+        controller?.setTitle(titleField.stringValue)
+    }
 
     // MARK: import
 
@@ -358,12 +546,13 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         guard let pkg = outcome.package, let section = outcome.section, let result = outcome.result else { return }
         package = pkg
+        LastNotebook.remember(pkg.url)
         currentSection = pkg.notebook.sections.firstIndex { $0.id == section.id } ?? 0
         rebuildSectionPopup()
         dropPage()
-        table.deselectAll(nil)
+        outline.deselectAll(nil)
         reloadPages()
-        if !pages.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        if let first = pages.first { selectNav(first.id) }
         let a = NSAlert()
         a.messageText = "Imported “\(section.name)”"
         a.informativeText = importSummary(result.report)
@@ -509,6 +698,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.titlebarSeparatorStyle = .none
         window.isOpaque = true
         window.backgroundColor = Palette.stone
+        window.miniwindowImage = NSApp.applicationIconImage
         window.isReleasedWhenClosed = false          // the shell owns the window; closing it must not free it
         window.contentMinSize = NSSize(width: 760, height: 480)
         window.delegate = self
@@ -519,27 +709,36 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         glass.layer?.backgroundColor = Palette.stone.cgColor
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("title"))
-        table.addTableColumn(column)
-        table.headerView = nil
-        table.style = .sourceList
-        table.backgroundColor = .clear
-        table.rowHeight = 26
-        table.dataSource = self
-        table.delegate = self
+        column.resizingMask = .autoresizingMask
+        outline.addTableColumn(column)
+        outline.outlineTableColumn = column
+        outline.headerView = nil
+        outline.style = .sourceList
+        outline.backgroundColor = .clear
+        outline.rowHeight = 26
+        outline.indentationPerLevel = 16
+        outline.autoresizesOutlineColumn = true
+        outline.floatsGroupRows = false
+        outline.dataSource = self
+        outline.delegate = self
+        outline.doubleAction = #selector(renameFolder(_:))
+        outline.registerForDraggedTypes([navType])
+        outline.setDraggingSourceOperationMask(.move, forLocal: true)
         let sideScroll = NSScrollView()
-        sideScroll.documentView = table
+        sideScroll.documentView = outline
         sideScroll.hasVerticalScroller = true
         sideScroll.drawsBackground = false
         sideScroll.borderType = .noBorder
         sideScroll.scrollerStyle = .overlay
         let add = symbolButton("plus", #selector(addPage(_:)), tip: "Add page")
-        let remove = symbolButton("minus", #selector(removePage(_:)), tip: "Delete page")
+        let folder = symbolButton("folder.badge.plus", #selector(addFolder(_:)), tip: "New folder")
+        let remove = symbolButton("minus", #selector(removePage(_:)), tip: "Delete page or remove folder")
         sectionPopup.target = self
         sectionPopup.action = #selector(pickSection(_:))
         sectionPopup.refusesFirstResponder = true
         sectionPopup.bezelStyle = .recessed
         sectionPopup.font = .systemFont(ofSize: 13, weight: .medium)
-        let sideButtons = NSStackView(views: [add, remove])
+        let sideButtons = NSStackView(views: [add, folder, remove])
         sideButtons.spacing = 2
         let side = NSStackView(views: [sectionPopup, sideScroll, sideButtons])
         side.orientation = .vertical
@@ -701,6 +900,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("New Notebook…", #selector(newNotebook(_:)), "n", in: file)
         item("Open Notebook…", #selector(openNotebook(_:)), "o", in: file)
         item("New Page", #selector(addPage(_:)), "t", in: file)
+        item("New Folder", #selector(addFolder(_:)), "n", mods: [.command, .shift], in: file)
         item("Import .one…", #selector(importOne(_:)), "i", in: file)
         let insert = submenu("Insert")
         item("Bullet List", #selector(bullet(_:)), in: insert)
