@@ -454,7 +454,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     // MARK: encryption
 
     private func secureField(_ placeholder: String, plain: Bool = false) -> NSTextField {
-        let field: NSTextField = plain ? NSTextField() : NSSecureTextField()
+        let field: NSTextField = plain ? PromptTextField() : PromptSecureField()
         field.placeholderString = placeholder
         field.widthAnchor.constraint(equalToConstant: 300).isActive = true
         return field
@@ -1977,5 +1977,38 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         item("Bring to Front", #selector(bringToFront(_:)), "]", in: arrange)
         item("Send to Back", #selector(sendToBack(_:)), "[", in: arrange)
         NSApp.mainMenu = main
+    }
+}
+
+
+/// Dialogs run modally, and while one is up the Edit menu does not reach it. These fields answer the standard
+/// editing shortcuts themselves so Paste (for a password manager's output), Copy, Cut, Select All and Undo work.
+private func promptEditingShortcut(_ event: NSEvent, in field: NSTextField) -> Bool {
+    guard event.type == .keyDown,
+          event.modifierFlags.intersection([.command, .option, .control]) == .command,
+          let editor = field.currentEditor() as? NSTextView,
+          let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+    let shifted = event.modifierFlags.contains(.shift)
+    switch (key, shifted) {
+    case ("v", false): editor.paste(nil)
+    case ("c", false): editor.copy(nil)
+    case ("x", false): editor.cut(nil)
+    case ("a", false): editor.selectAll(nil)
+    case ("z", false): editor.undoManager?.undo()
+    case ("z", true): editor.undoManager?.redo()
+    default: return false
+    }
+    return true
+}
+
+private final class PromptTextField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        promptEditingShortcut(event, in: self) || super.performKeyEquivalent(with: event)
+    }
+}
+
+private final class PromptSecureField: NSSecureTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        promptEditingShortcut(event, in: self) || super.performKeyEquivalent(with: event)
     }
 }
