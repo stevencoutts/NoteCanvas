@@ -3,7 +3,11 @@ import Foundation
 public struct PageRef: Codable, Equatable, Sendable {
     public var id: UUID
     public var title: String
-    public init(id: UUID, title: String) { self.id = id; self.title = title }
+    /// "#RRGGBB" when this page has a sidebar colour. Missing on notebooks saved before page colours.
+    public var colorHex: String?
+    public init(id: UUID, title: String, colorHex: String? = nil) {
+        self.id = id; self.title = title; self.colorHex = colorHex
+    }
 }
 
 public struct Folder: Codable, Equatable, Sendable {
@@ -107,6 +111,12 @@ public struct Section: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func setFolderColor(_ id: UUID, to colorHex: String?) -> Bool {
         Self.setColor(id, to: colorHex, in: &items)
+    }
+
+    /// Sets the page's sidebar colour. Nil clears it. The page title is left alone.
+    @discardableResult
+    public mutating func setPageColor(_ id: UUID, to colorHex: String?) -> Bool {
+        Self.setPageColor(id, to: colorHex, in: &items)
     }
 
     /// Removes the folder and leaves its contents where the folder was.
@@ -244,6 +254,24 @@ public struct Section: Codable, Equatable, Sendable {
             if setColor(id, to: colorHex, in: &folder.children) {
                 items[i] = .folder(folder)
                 return true
+            }
+        }
+        return false
+    }
+
+    private static func setPageColor(_ id: UUID, to colorHex: String?, in items: inout [NotebookItem]) -> Bool {
+        for i in items.indices {
+            switch items[i] {
+            case .page(var page) where page.id == id:
+                page.colorHex = colorHex
+                items[i] = .page(page)
+                return true
+            case .folder(var folder):
+                if setPageColor(id, to: colorHex, in: &folder.children) {
+                    items[i] = .folder(folder)
+                    return true
+                }
+            default: break
             }
         }
         return false

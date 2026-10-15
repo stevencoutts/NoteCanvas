@@ -103,6 +103,29 @@ func storeChecks() {
     try! Data("not json".utf8).write(to: garbage.appendingPathComponent("notebook.json"))
     checkEqual(checkThrows("garbage manifest") { try NotebookPackage.open(at: garbage) } as? StoreError,
                .corruptManifest, "garbage manifest gives corruptManifest")
+
+    pageColorStoreChecks()
+}
+
+func pageColorStoreChecks() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("Colors.notebook")
+    var pkg = try! NotebookPackage.create(at: url, name: "Colors")
+    let page = try! pkg.addPage(title: "Kept")
+    let fileURL = url.appendingPathComponent("pages/\(page.id.uuidString).json")
+    let before = try! Data(contentsOf: fileURL)
+    try! pkg.setPageColor(page.id, section: 0, to: "#34547E")
+    checkEqual(try! Data(contentsOf: fileURL), before, "a page colour does not change the page file contents")
+    checkEqual(pkg.notebook.sections[0].pages.first?.title, "Kept", "a page colour does not change its title")
+    checkEqual(pkg.notebook.sections[0].pages.first?.colorHex, "#34547E", "a page colour is written to the manifest")
+    let reopened = try! NotebookPackage.open(at: url)
+    checkEqual(reopened.notebook.sections[0].pages.first?.colorHex, "#34547E", "a page colour round-trips from the manifest")
+    checkEqual(try! pkg.loadPage(page.id), page, "colouring a page leaves the loaded page file unchanged")
+    try! pkg.setPageColor(page.id, section: 0, to: nil)
+    checkEqual(pkg.notebook.sections[0].pages.first?.colorHex, nil as String?, "default clears a saved page colour")
+    checkEqual(pkg.notebook.sections[0].pages.first?.title, "Kept", "clearing a page colour leaves its title")
 }
 
 func assetAndSectionChecks() {

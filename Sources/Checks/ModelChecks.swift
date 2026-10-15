@@ -140,6 +140,7 @@ func modelChecks() {
     historyChecks()
     objectChecks()
     folderChecks()
+    pageColorChecks()
 }
 
 func objectChecks() {
@@ -269,4 +270,33 @@ func folderChecks() {
     checkEqual(saved.folder(uncolored.id)?.colorHex, "#A33B32", "a folder colour round-trips")
     checkEqual(saved.pages.map(\.title), titles, "a folder colour does not change page titles")
     checkEqual(titles, ["Kept"], "the page title is still Kept")
+}
+
+func pageColorChecks() {
+    let pageID = UUID()
+    let bare = """
+    {"id":"\(pageID.uuidString)","title":"Kept"}
+    """
+    let decoded = try! JSONDecoder().decode(PageRef.self, from: Data(bare.utf8))
+    checkEqual(decoded.colorHex, nil as String?, "a page saved without a colour decodes")
+    checkEqual(decoded.title, "Kept", "a missing colour leaves the page title")
+
+    let page = Page(id: pageID, title: "Kept", objects: [.text(box(0, 0, 120))])
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let pageFile = try! encoder.encode(page)
+
+    var section = Section(id: UUID(), name: "S", pages: [])
+    let folder = section.addFolder(named: "Personal", inFolder: nil)
+    section.addPage(decoded, inFolder: folder)
+    check(section.setPageColor(pageID, to: "#3D7048"), "a page can take a colour")
+    let saved = try! JSONDecoder().decode(Section.self, from: JSONEncoder().encode(section))
+    checkEqual(saved.pages.first { $0.id == pageID }?.colorHex, "#3D7048", "a page colour round-trips")
+    checkEqual(saved.pages.first { $0.id == pageID }?.title, "Kept", "a page colour does not change its title")
+    checkEqual(try! encoder.encode(page), pageFile, "a page colour does not change the page file contents")
+
+    check(section.setPageColor(pageID, to: nil), "default clears a page colour")
+    let cleared = try! JSONDecoder().decode(Section.self, from: JSONEncoder().encode(section))
+    checkEqual(cleared.pages.first { $0.id == pageID }?.colorHex, nil as String?, "a cleared page colour is absent")
+    checkEqual(cleared.pages.first { $0.id == pageID }?.title, "Kept", "clearing a page colour leaves its title")
 }
