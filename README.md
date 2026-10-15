@@ -1,6 +1,6 @@
 # NoteCanvas
 
-A native macOS app for free-form notes. Pages are a canvas of positioned text boxes, images, tables, and attachments. Notebooks are ordinary folders on disk. A OneNote section file (`.one`) can be imported into a new section. The app does not sync, and it does not write `.one` files.
+A native macOS app for free-form notes. Pages are a canvas of positioned text boxes, images, tables, and attachments. Notebooks are ordinary folders on disk, and can be encrypted as a whole or section by section. OneNote section files (`.one`) can be imported, one at a time or from OneNote's own backups. The app does not sync, and it does not write `.one` files.
 
 Requires macOS 14 or later. The interface is AppKit. There are no third-party dependencies.
 
@@ -31,6 +31,8 @@ My Notes.notebook/
 
 `notebook.json` is written after the page and asset files, so a failed save does not leave the manifest pointing at a missing page.
 
+An encrypted notebook keeps the same layout, with `keys.json` added and every other file stored as an encrypted `.nce` object. A locked section adds `sections/<id>.keys.json` and `sections/<id>.nce`, and its pages and images are encrypted under the section's own key. Only `keys.json` is readable without a passphrase.
+
 ## Build and run
 
 Swift Package Manager is enough. Xcode is not required.
@@ -51,10 +53,16 @@ swift run Checks
 
 GitHub Actions runs these checks on every push and pull request to `main`.
 
-To publish a build, tag a version and push the tag:
+To publish a build, tag a version and push the tag. The version must have three parts, such as `v1.2.0`. The release workflow rejects anything else.
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag -a v1.2.0 -m "NoteCanvas v1.2.0" && git push origin v1.2.0
+```
+
+To try the app on invented notes, build a demo notebook and open it:
+
+```bash
+swift run DemoNotebook ~/Desktop/Demo
 ```
 
 A real-file check runs only when `ONE_CORPUS_DIR` is set, and it prints aggregate counts only. Do not commit `.one` files, note text, or notebook backups. Those patterns are listed in `.gitignore`.
@@ -64,11 +72,13 @@ A real-file check runs only when `ONE_CORPUS_DIR` is set, and it prints aggregat
 | Target | Role |
 |---|---|
 | `PageModel` | Pages, objects, text operations, undo. No UI and no files. |
-| `Store` | The notebook folder. |
+| `Store` | The notebook folder, including encryption and locked sections. |
 | `OneStore` | Reader for the MS-ONESTORE container format. |
 | `OneImport` | Maps a section file onto `PageModel` and writes the loss report. |
-| `CanvasKit` | The AppKit canvas, section list, and import flow. |
+| `CanvasKit` | The AppKit canvas, sidebar, encryption prompts, and import flows. |
 | `CanvasApp` | The app entry point. |
+| `Checks` | The test harness (`swift run Checks`). |
+| `DemoNotebook` | Writes a notebook of invented notes, for screenshots and trying the app. |
 
 The container format follows Microsoft's [MS-ONESTORE](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-onestore/) and [MS-ONE](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-one/) specifications. OneNote may still display an imported page differently where the specification does not define a property.
 
