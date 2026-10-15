@@ -11,12 +11,15 @@ public struct NotebookCipher {
 
 /// A notebook on disk: `notebook.json` plus `pages/<uuid>.json`.
 public struct NotebookPackage {
-    public let url: URL
+    public private(set) var url: URL
     public private(set) var notebook: Notebook
     /// Nil for an unencrypted notebook. See docs/encryption-spec.md.
     public private(set) var cipher: NotebookCipher? = nil
 
     public var isEncrypted: Bool { cipher != nil }
+
+    /// Points the package at the folder it was moved to. The caller has already checked that the folder is this notebook.
+    public mutating func relocate(to newURL: URL) { url = newURL }
 
     private var manifestURL: URL { url.appendingPathComponent(cipher == nil ? "notebook.json" : "notebook.nce") }
     private var keysURL: URL { url.appendingPathComponent("keys.json") }

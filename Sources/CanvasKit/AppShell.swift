@@ -93,6 +93,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var isFlushing = false              // flush callers explain a failure themselves
     private var revertingSelection = false
     private var currentSection = 0
+    private var notebookBookmark: Data?        // follows the notebook folder if it is moved while open
     private var collapsed = Set<UUID>()         // sections and folders the user has folded away
     private var importCancel: ImportCancelFlag?
     private var progressSheet: NSPanel?
@@ -240,6 +241,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func closeNotebook() {
         LastNotebook.forget()
+        notebookBookmark = nil
         dropPage()
         package = nil
         currentSection = 0
@@ -256,6 +258,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         outline.deselectAll(nil)
         package = pkg
         LastNotebook.remember(pkg.url)
+        notebookBookmark = try? pkg.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         currentSection = 0
         collapsed = []
         window.title = pkg.notebook.name
@@ -386,7 +389,24 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         return true
     }
 
+    /// If the notebook folder was moved or renamed while it was open (in Finder, or by a sync client), follow it.
+    /// Uses the bookmark taken when the notebook was opened, which tracks a move on the same volume.
+    private func relocateIfMoved() {
+        guard let pkg = package, !FileManager.default.fileExists(atPath: pkg.url.path), let data = notebookBookmark else { return }
+        var stale = false
+        guard let moved = try? URL(resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting],
+                                   relativeTo: nil, bookmarkDataIsStale: &stale),
+              moved.standardizedFileURL != pkg.url.standardizedFileURL,
+              FileManager.default.fileExists(atPath: moved.path) else { return }
+        package?.relocate(to: moved)
+        LastNotebook.remember(moved)
+        notebookBookmark = try? moved.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+
+    public func applicationDidBecomeActive(_ notification: Notification) { relocateIfMoved() }
+
     private func save(_ page: Page) -> Bool {
+        relocateIfMoved()
         do {
             try package?.savePage(page)
             lastSaveError = nil

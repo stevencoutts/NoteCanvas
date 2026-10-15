@@ -268,3 +268,20 @@ func encryptedNotebookChecks() {
     checkEqual(checkThrows("convert twice") { try plain.encrypt(passphrase: passphrase, iterations: rounds) } as? StoreError,
                .alreadyEncrypted, "an encrypted notebook cannot be converted again")
 }
+
+/// A notebook folder that is moved while open can be followed with `relocate(to:)`.
+func relocationChecks() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-move-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let from = root.appendingPathComponent("A.notebook")
+    let to = root.appendingPathComponent("Nextcloud-B.notebook")
+    var pkg = try! NotebookPackage.create(at: from, name: "A")
+    var page = try! pkg.addPage(title: "Before")
+    try! FileManager.default.moveItem(at: from, to: to)
+    check(checkThrows("save into a moved folder") { try pkg.savePage(page) } != nil, "saving into a folder that has moved fails")
+    pkg.relocate(to: to)
+    page.title = "After"
+    try! pkg.savePage(page)
+    checkEqual(try! NotebookPackage.open(at: to).notebook.sections[0].pages.map(\.title), ["After"], "saving works again after relocating")
+}
