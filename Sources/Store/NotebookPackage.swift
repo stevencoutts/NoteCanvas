@@ -184,7 +184,7 @@ public struct NotebookPackage {
 
     /// Writes `updated` as the manifest and only then adopts it, so a failed write leaves memory matching disk.
     /// An encrypted notebook also counts the write in `revision`.
-    private mutating func commitManifest(_ updated: Notebook) throws {
+    mutating func commitManifest(_ updated: Notebook) throws {
         var nextLocks = locks
         // An open locked section keeps its real content in its own manifest, so a change to it goes there first.
         for (id, state) in locks {

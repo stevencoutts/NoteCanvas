@@ -11,6 +11,7 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 ## What you can do
 
 - The title bar shows the app name and version, then the notebook's name. Click the name to rename the notebook. The folder on disk keeps its name.
+- Drag sections to reorder them, and drag pages and folders onto any section or folder, including one in a different section. To use another notebook, right-click a section, folder or page and choose **Move to Another Notebook…** or **Copy to Another Notebook…**. Images come with the pages. An encrypted notebook asks for its passphrase, and what arrives is stored encrypted. A move removes the original only once the copy has finished.
 - Hide the whole sidebar with the sidebar button at the left of the toolbar, or **View > Hide Sidebar** (Control-Command-S), to give the page the full window. The choice is remembered. **View > Collapse All Sections** (Option-Command-minus) folds every section and folder, and **Expand All Sections** opens them again.
 - Place, move, resize, and format text boxes. Undo and redo cover those edits.
 - Organise notes as sections, folders and pages in a sidebar tree. Every section and folder folds away. Add, rename and delete sections from the sidebar buttons, the File menu, or a right-click.

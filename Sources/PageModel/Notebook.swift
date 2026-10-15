@@ -99,6 +99,25 @@ public struct Section: Codable, Equatable, Sendable {
 
     public func folder(_ id: UUID) -> Folder? { Self.findFolder(id, in: items) }
 
+    /// The page or folder with this id, wherever it sits in the section.
+    public func item(_ id: UUID) -> NotebookItem? { Self.findItem(id, in: items) }
+
+    /// Every page id inside an item: the page itself, or all pages under a folder, folders nested in it included.
+    public static func pageIDs(of item: NotebookItem) -> [UUID] {
+        switch item {
+        case .page(let page): return [page.id]
+        case .folder(let folder): return flatten(folder.children).map(\.id)
+        }
+    }
+
+    private static func findItem(_ id: UUID, in items: [NotebookItem]) -> NotebookItem? {
+        for item in items {
+            if item.id == id { return item }
+            if case .folder(let folder) = item, let found = findItem(id, in: folder.children) { return found }
+        }
+        return nil
+    }
+
     /// Appends a page. A missing folder puts it at the section root.
     public mutating func addPage(_ ref: PageRef, inFolder folderID: UUID? = nil) {
         let item = NotebookItem.page(ref)
@@ -344,5 +363,19 @@ public struct Notebook: Codable, Equatable, Sendable {
         try c.encode(name, forKey: .name)
         try c.encode(sections, forKey: .sections)
         if revision != 0 { try c.encode(revision, forKey: .revision) }
+    }
+}
+
+
+public extension Notebook {
+    /// Moves a section to `index`, counted in the list as it is now (the way a drop position is). False when it is not there.
+    @discardableResult
+    mutating func moveSection(_ id: UUID, to index: Int) -> Bool {
+        guard let from = sections.firstIndex(where: { $0.id == id }) else { return false }
+        var target = index
+        if from < target { target -= 1 }
+        let section = sections.remove(at: from)
+        sections.insert(section, at: min(max(target, 0), sections.count))
+        return true
     }
 }

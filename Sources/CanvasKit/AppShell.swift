@@ -847,6 +847,137 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
     }
 
+    // MARK: move and copy to another notebook
+
+    private struct TransferTarget {
+        var title: String
+        /// Index of the destination section, or nil for a new section named after the source section.
+        var section: Int?
+        var folder: UUID?
+    }
+
+    /// Every place in `dest` a page or folder can go: each readable section, the folders inside it, and a new section.
+    private func transferTargets(in dest: NotebookPackage, newSectionName: String) -> [TransferTarget] {
+        var targets: [TransferTarget] = []
+        func walk(_ items: [NotebookItem], section: Int, prefix: String) {
+            for item in items {
+                if case .folder(let folder) = item {
+                    let title = prefix + " / " + folder.name
+                    targets.append(TransferTarget(title: title, section: section, folder: folder.id))
+                    walk(folder.children, section: section, prefix: title)
+                }
+            }
+        }
+        for (index, section) in dest.notebook.sections.enumerated() where dest.isSectionReadable(section.id) {
+            targets.append(TransferTarget(title: section.name, section: index, folder: nil))
+            walk(section.items, section: index, prefix: section.name)
+        }
+        targets.append(TransferTarget(title: "New section “\(newSectionName)”", section: nil, folder: nil))
+        return targets
+    }
+
+    @objc func moveToNotebook(_ sender: NSMenuItem) { transferToNotebook(sender, move: true) }
+    @objc func copyToNotebook(_ sender: NSMenuItem) { transferToNotebook(sender, move: false) }
+
+    /// Copies or moves a section, folder or page into another notebook on disk. Nothing leaves the old place until the
+    /// copy has finished, so a failure part way never loses notes.
+    private func transferToNotebook(_ sender: NSMenuItem, move: Bool) {
+        guard let id = menuTargetID(sender), package != nil else { return }
+        let verb = move ? "Move" : "Copy"
+        if isClosedLocked(id) {
+            inform("Unlock the section first", "A locked section has to be open before it can be \(move ? "moved" : "copied").")
+            return
+        }
+        let isSection = isSectionRow(id)
+        if move, isSection, (package?.notebook.sections.count ?? 0) <= 1 {
+            inform("A notebook needs one section", "This is the only section here. Add another section first, or copy it instead.")
+            return
+        }
+        commitEditing()
+        guard flushController() else {
+            inform("This page could not be saved", "Fix the problem, then try again.")
+            return
+        }
+        guard let source = package, let sourceIndex = sectionIndex(of: id) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose the notebook to \(verb.lowercased()) into."
+        panel.prompt = verb
+        panel.directoryURL = source.url.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if url.standardizedFileURL.path == source.url.standardizedFileURL.path {
+            inform("That is the notebook you are in", "To move a page or folder inside this notebook, drag it onto another section or folder in the sidebar.")
+            return
+        }
+        var dest: NotebookPackage
+        do {
+            if NotebookPackage.isEncrypted(at: url) {
+                guard let unlocked = unlockNotebook(at: url) else { return }
+                dest = unlocked
+            } else {
+                dest = try NotebookPackage.open(at: url)
+            }
+        } catch { show(error); return }
+
+        let sourceSection = source.notebook.sections[sourceIndex]
+        let itemName = isSection ? sourceSection.name
+            : (sourceSection.folder(id)?.name ?? sourceSection.pages.first { $0.id == id }?.title ?? "this item")
+        let alert = NSAlert()
+        alert.messageText = "\(verb) “\(itemName)” to “\(dest.notebook.name)”"
+        var targets: [TransferTarget] = []
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+        if isSection {
+            alert.informativeText = move
+                ? "It is added to the other notebook as a new section, then removed from this one. Its pages go to the Trash here."
+                : "It is added to the other notebook as a new section. Nothing changes here."
+        } else {
+            alert.informativeText = move
+                ? "Choose where it goes. It is removed from this notebook once the copy is complete."
+                : "Choose where it goes. Nothing changes here."
+            targets = transferTargets(in: dest, newSectionName: sourceSection.name)
+            popup.addItems(withTitles: targets.map(\.title))
+            alert.accessoryView = popup
+        }
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            var result = TransferResult()
+            if isSection {
+                result = try NotebookPackage.copySection(id, of: source, into: &dest)
+            } else {
+                let choice = targets[popup.indexOfSelectedItem]
+                var destIndex = choice.section ?? 0
+                if choice.section == nil {
+                    _ = try dest.addSection(name: sourceSection.name, pages: [])
+                    destIndex = dest.notebook.sections.count - 1
+                }
+                result = try NotebookPackage.copyItems([id], fromSection: sourceIndex, of: source, into: &dest,
+                                                       section: destIndex, inFolder: choice.folder)
+            }
+            if move {
+                guard var pkg = package else { return }
+                if isSection { _ = try pkg.deleteSection(id) } else { try pkg.deleteItem(id, section: sourceIndex) }
+                package = pkg
+                dropPage()
+                reloadPages()
+                if let first = pages.first { selectNav(first.id) }
+            }
+            var summary = "\(result.pages) \(result.pages == 1 ? "page" : "pages")"
+            if result.folders > 0 { summary += " and \(result.folders) \(result.folders == 1 ? "folder" : "folders")" }
+            summary += move ? " moved to “\(dest.notebook.name)”." : " copied to “\(dest.notebook.name)”."
+            if result.missingAssets > 0 {
+                summary += " \(result.missingAssets) image or attachment files were missing in the source, so those pages show gaps."
+            }
+            inform(move ? "Moved" : "Copied", summary)
+        } catch {
+            show(error)
+            inform("The \(verb.lowercased()) did not finish", "Nothing was removed from this notebook. Part of it may already be in “\(dest.notebook.name)”.")
+        }
+    }
+
     // MARK: pages sidebar
 
     private func currentSectionModel() -> Section? {
@@ -957,18 +1088,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     public func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-        guard let row = item as? SidebarRow, !isSectionRow(row.id) else { return nil }
+        guard let row = item as? SidebarRow else { return nil }
         let writer = NSPasteboardItem()
         writer.setString(row.id.uuidString, forType: navType)
         return writer
     }
 
     public func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
-        // Rows move only inside their own section; the top level is the list of sections.
-        guard let moving = draggedNavID(info), let owner = sectionIndex(of: moving),
-              let sections = package?.notebook.sections,
-              let row = item as? SidebarRow, sectionIndex(of: row.id) == owner else { return [] }
-        let section = sections[owner]
+        guard let moving = draggedNavID(info), let sections = package?.notebook.sections else { return [] }
+        // A section is dragged to a new place in the list of sections.
+        if sections.contains(where: { $0.id == moving }) {
+            if item == nil, index != NSOutlineViewDropOnItemIndex { return .move }
+            guard let row = item as? SidebarRow, let target = sectionIndex(of: row.id) else { return [] }
+            outlineView.setDropItem(nil, dropChildIndex: target)
+            return .move
+        }
+        // A page or folder can go into any section, or into any folder, of this notebook.
+        guard let owner = sectionIndex(of: moving), let row = item as? SidebarRow,
+              let target = sectionIndex(of: row.id), !isClosedLocked(sections[target].id) else { return [] }
+        let section = sections[target]
         if row.id == section.id { return .move }
         if section.folder(row.id) == nil {
             let parent = section.parent(of: row.id)
@@ -977,22 +1115,44 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             outlineView.setDropItem(navRow(parent ?? section.id), dropChildIndex: at)
             return .move
         }
-        if nests(moving, inside: row.id, section: section) { return [] }
+        if target == owner, nests(moving, inside: row.id, section: section) { return [] }
+        if target != owner, let node = sections[owner].item(moving), Section.pageIDs(of: node).contains(row.id) { return [] }
         return .move
     }
 
     public func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
-        guard var pkg = package, let id = draggedNavID(info), let owner = sectionIndex(of: id),
-              let row = item as? SidebarRow, sectionIndex(of: row.id) == owner else { return false }
-        let parent: UUID? = row.id == pkg.notebook.sections[owner].id ? nil : row.id
+        guard var pkg = package, let id = draggedNavID(info) else { return false }
         let at = index == NSOutlineViewDropOnItemIndex ? Int.max : index
+        if pkg.notebook.sections.contains(where: { $0.id == id }) {
+            do {
+                guard try pkg.moveSection(id, to: at) else { return false }
+                package = pkg
+                reloadPages()
+                selectNav(id)
+                return true
+            } catch { show(error); return false }
+        }
+        guard let owner = sectionIndex(of: id), let row = item as? SidebarRow, let target = sectionIndex(of: row.id) else { return false }
+        let parent: UUID? = row.id == pkg.notebook.sections[target].id ? nil : row.id
         do {
-            guard try pkg.moveItem(id, section: owner, into: parent, at: at) else { return false }
-            package = pkg
+            if target == owner {
+                guard try pkg.moveItem(id, section: owner, into: parent, at: at) else { return false }
+                package = pkg
+                reloadPages()
+                selectNav(id)
+                return true
+            }
+            // Into another section: the page is saved first, then copied across and removed from the old place.
+            commitEditing()
+            guard flushController() else { inform("This page could not be saved", "Fix the problem, then try again."); return false }
+            guard var live = package else { return false }
+            let result = try live.relocate(id, fromSection: owner, toSection: target, inFolder: parent)
+            package = live
+            dropPage()
             reloadPages()
-            selectNav(id)
+            if let first = result.topLevelIDs.first { selectNav(first) }
             return true
-        } catch { show(error); return false }
+        } catch { show(error); reloadFromDisk(); return false }
     }
 
     private func draggedNavID(_ info: NSDraggingInfo) -> UUID? {
@@ -1140,6 +1300,16 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         return items
     }
 
+    private func addTransferItems(to menu: NSMenu, id: UUID) {
+        for (title, action) in [("Move to Another Notebook…", #selector(moveToNotebook(_:))),
+                                ("Copy to Another Notebook…", #selector(copyToNotebook(_:)))] {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = id.uuidString
+            menu.addItem(entry)
+        }
+    }
+
     public func menuNeedsUpdate(_ menu: NSMenu) {
         if menu == outline.menu {
             menu.removeAllItems()
@@ -1179,6 +1349,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                     addItem("Remove Section Lock…", #selector(removeSectionLockAction(_:)))
                 }
                 menu.addItem(.separator())
+                addTransferItems(to: menu, id: id)
+                menu.addItem(.separator())
                 let delete = NSMenuItem(title: "Delete Section…", action: #selector(deleteFromMenu(_:)), keyEquivalent: "")
                 delete.target = self
                 delete.representedObject = id.uuidString
@@ -1187,6 +1359,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             }
             if isFolder { menu.addItem(.separator()) }
             for item in folderColorItems(id: id, current: sidebarColorHex(of: id)) { menu.addItem(item) }
+            menu.addItem(.separator())
+            addTransferItems(to: menu, id: id)
             return
         }
         let current = selectedID().map { sidebarColorHex(of: $0) }
