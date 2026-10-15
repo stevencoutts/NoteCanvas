@@ -2,3 +2,5 @@
 .swiftpm/
 findings.md
 .DS_Store
+*.one
+*.onetoc2
