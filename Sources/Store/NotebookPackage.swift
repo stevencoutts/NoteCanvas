@@ -360,6 +360,13 @@ public struct NotebookPackage {
     }
 
     /// Renames the section with this id. An unknown id changes nothing.
+    /// Renames the notebook as shown in the app. The folder on disk keeps its name.
+    public mutating func renameNotebook(to name: String) throws {
+        var updated = notebook
+        updated.name = name
+        try commitManifest(updated)
+    }
+
     public mutating func renameSection(_ id: UUID, to name: String) throws {
         var updated = notebook
         guard let index = updated.sections.firstIndex(where: { $0.id == id }) else { return }

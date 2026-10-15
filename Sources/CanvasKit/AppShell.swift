@@ -84,6 +84,8 @@ private final class AboutKeyView: NSView {
 
 public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var window: NSWindow!
+    private let appNameLabel = NSTextField(labelWithString: "")
+    private let notebookNameField = NSTextField()
     private var sideColumn: NSView?
     private var sheetWidth: NSLayoutConstraint?
     private static let sidebarHiddenKey = "sidebarHidden"
@@ -251,7 +253,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         currentSection = 0
         outline.deselectAll(nil)
         reloadPages()
-        window.title = "NoteCanvas"
+        setWindowTitle(nil)
     }
 
     private func use(_ pkg: NotebookPackage) {
@@ -269,7 +271,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if let live = package {
             currentSection = live.notebook.sections.firstIndex { !(live.isSectionLocked($0.id) && !live.isSectionUnlocked($0.id)) } ?? 0
         }
-        window.title = pkg.notebook.name
+        setWindowTitle(pkg.notebook.name)
         reloadPages()
         if pages.isEmpty, var p = package {
             _ = try? p.addPage(title: "Untitled Page"); package = p; reloadPages()
@@ -422,7 +424,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             try package?.savePage(page)
             lastSaveError = nil
             saveFailureReported = false
-            window.title = package?.notebook.name ?? ""
+            setWindowTitle(package?.notebook.name)
             if let i = pages.firstIndex(where: { $0.id == page.id }), pages[i].title != page.title {
                 pages[i].title = page.title
                 if let row = navRows[page.id] { outline.reloadItem(row) }
@@ -430,7 +432,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             return true
         } catch {
             lastSaveError = error
-            window.title = "⚠︎ SAVE FAILED: \(error)"
+            setWindowTitle("⚠︎ SAVE FAILED: \(error)", editable: false)
             if !isFlushing && !saveFailureReported {
                 saveFailureReported = true
                 inform("NoteCanvas could not save this page", "\(error)\n\nYour changes stay on screen and NoteCanvas keeps "
@@ -1278,6 +1280,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) {
+        if (obj.object as? NSTextField) === notebookNameField { commitNotebookName(); return }
         guard (obj.object as? NSTextField) === titleField else { return }
         controller?.setTitle(titleField.stringValue)
     }
@@ -1599,11 +1602,79 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         return rule
     }
 
+    /// The version in the form "1.1.3", or nil when this process is not a bundled .app (`swift run`).
+    private static func versionNumber() -> String? {
+        guard Bundle.main.bundleURL.pathExtension.lowercased() == "app",
+              let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return nil }
+        let version = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return version.isEmpty ? nil : version
+    }
+
+    /// The title bar shows the app name and version, then the notebook's name, which can be edited in place.
+    private func addTitleBarAccessory() {
+        appNameLabel.stringValue = Self.versionNumber().map { "NoteCanvas \($0)" } ?? "NoteCanvas (development)"
+        appNameLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        appNameLabel.textColor = Palette.ink.withAlphaComponent(0.55)
+        appNameLabel.lineBreakMode = .byTruncatingTail
+        let dot = NSTextField(labelWithString: "·")
+        dot.font = .systemFont(ofSize: 13)
+        dot.textColor = Palette.ink.withAlphaComponent(0.4)
+        notebookNameField.font = .systemFont(ofSize: 13, weight: .semibold)
+        notebookNameField.textColor = Palette.ink
+        notebookNameField.isBordered = false
+        notebookNameField.drawsBackground = false
+        notebookNameField.focusRingType = .none
+        notebookNameField.usesSingleLineMode = true
+        notebookNameField.lineBreakMode = .byTruncatingTail
+        notebookNameField.placeholderString = "Notebook name"
+        notebookNameField.toolTip = "Click to rename the notebook"
+        notebookNameField.delegate = self
+        notebookNameField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        let row = NSStackView(views: [appNameLabel, dot, notebookNameField])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 12)
+        row.setFrameSize(NSSize(width: row.fittingSize.width, height: 28))
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .left
+        accessory.view = row
+        window.addTitlebarAccessoryViewController(accessory)
+        setWindowTitle(nil)
+    }
+
+    /// Sets the window title (used by Mission Control and the Window menu) and the title bar's notebook name.
+    /// With no name the field is empty and cannot be edited, because there is no notebook to rename.
+    private func setWindowTitle(_ name: String?, editable: Bool = true) {
+        window.title = name ?? "NoteCanvas"
+        // A page autosave must not overwrite a name the user is in the middle of typing.
+        if notebookNameField.currentEditor() == nil || name == nil { notebookNameField.stringValue = name ?? "" }
+        notebookNameField.isEditable = editable && name != nil && package != nil
+        notebookNameField.isSelectable = notebookNameField.isEditable
+    }
+
+    private func commitNotebookName() {
+        guard var pkg = package else { return }
+        let typed = notebookNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty, typed != pkg.notebook.name else {
+            setWindowTitle(pkg.notebook.name)
+            return
+        }
+        do {
+            try pkg.renameNotebook(to: typed)
+            package = pkg
+            setWindowTitle(typed)
+        } catch {
+            setWindowTitle(pkg.notebook.name)
+            show(error)
+        }
+    }
+
     private func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "NoteCanvas"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isOpaque = true
@@ -1613,6 +1684,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.contentMinSize = NSSize(width: 760, height: 480)
         window.delegate = self
         window.center()
+        addTitleBarAccessory()
 
         let glass = NSView()
         glass.wantsLayer = true

@@ -10,6 +10,7 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 
 ## What you can do
 
+- The title bar shows the app name and version, then the notebook's name. Click the name to rename the notebook. The folder on disk keeps its name.
 - Hide the whole sidebar with **View > Hide Sidebar** (Control-Command-S) to give the page the full window. The choice is remembered.
 - Place, move, resize, and format text boxes. Undo and redo cover those edits.
 - Organise notes as sections, folders and pages in a sidebar tree. Every section and folder folds away. Add, rename and delete sections from the sidebar buttons, the File menu, or a right-click.
