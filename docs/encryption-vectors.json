@@ -1,0 +1,53 @@
+{
+  "note": "Public test vectors. Every key here is published and must never protect real data.",
+  "format": "notecanvas-encrypted-notebook",
+  "version": 1,
+  "notebookId": "00112233-4455-6677-8899-aabbccddeeff",
+  "notebookKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "passphraseSlot": {
+    "slotId": "a0a0a0a0-0000-4000-8000-000000000001",
+    "passphrase": "correct horse battery staple",
+    "kdf": {
+      "alg": "pbkdf2-hmac-sha256",
+      "iterations": 600000,
+      "salt": "EBESExQVFhcYGRobHB0eHw=="
+    },
+    "kekHex": "a7fe3eb8f898393305a3096819bf09efa54798445b27f257d0b8eae8397d6248",
+    "nonce": "ICEiIyQlJicoKSor",
+    "wrappedKey": "gqLSWh+DONugk7fq8Mb/lChsrQyhKwQccdaQ6QISf2OcetS/lpHHoahmFR41Zn/V"
+  },
+  "recoverySlot": {
+    "slotId": "a0a0a0a0-0000-4000-8000-000000000002",
+    "recoveryKeyHex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "display": "IBAU-EQ2E-IVDE-OSCJ-JJFU-YTKO-J5IF-CUST-KRKV-MV2Y-LFNF-WXC5-LZPW-D7VZ",
+    "kekHex": "4fe88eb23812fdb3ea67bd67ddca60d65ab4df1d030b68df0d7e8ef15c4addf7",
+    "nonce": "MDEyMzQ1Njc4OTo7",
+    "wrappedKey": "vselBDrwhkZ+ONei9KWTcGddNcnNsWGuXv5Bt+aML+YVviUdy35kB8niiAMjCz+a"
+  },
+  "objects": [
+    {
+      "kind": "page",
+      "logicalPath": "pages/aaaaaaaa-0000-4000-8000-000000000001.json",
+      "plaintextUtf8": "{\"id\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"title\":\"Test\",\"objects\":[]}",
+      "objectHex": "4e434531010002606162636465666768696a6b6c6d6e6f707172737475767778797a7b4e69cd311b862e12f8217d29902de11c289f791b8dc0e2465f9742c28562ae51b7d8f26d81d0f6193cd8040fc45f71a9f3cde49c2c3900d55052c30ad5152c3d6bbebe450f80c6f0e7a07c4aeb52dd41b6f1e36993b4435f4c"
+    },
+    {
+      "kind": "manifest",
+      "logicalPath": "notebook.json",
+      "plaintextUtf8": "{\"version\":1,\"name\":\"Vectors\",\"revision\":1,\"sections\":[]}",
+      "objectHex": "4e434531010001808182838485868788898a8b8c8d8e8f909192939495969798999a9bd80e8f42e35d7447f8ac326e8d5dfd8742258c9356828b656028f8399095fc13c604a6a8654b1ba1c5269b696ec9e85a73a1d91d3466bff2d85e63b0683bfd0e017c939837de07bbff"
+    },
+    {
+      "kind": "asset",
+      "logicalPath": "assets/bbbbbbbb-0000-4000-8000-000000000001.png",
+      "plaintextHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "objectHex": "4e434531010003a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babb29c2d029b8f2d109f9f987b794a21f7ad5b499738c128e7e993391f890118d6c1b52c23979b5f6de9a655a56ab53442078a8ec97633778e5c9c21ddbfd8913f0f0600b6d12dac1c4657b2ed15ab5bfa74a2c2b095bbc79e8a67ce74dd1174f049ec8739822da8c2dafbde4d68fa11ebaac2fba86c5796574c8871c4716a6ec95e80aabe7faf4a1a0d748291cb85be7800da14601bf089a68b93377d0692c03b7eeee348188d1b07e2c9e912af2f604b21514f0675a2d0c6d0014c0f6c60f5c584050645147595a1f5ca96595a8627b4ed76fcbc4c6cf96d3543cdbc953b067bb275fcaafcc0c5f1a9c67f728bc207bdae0548a07b4d8fb656fc0811a96c859969aa317cd3f95b1e39b95a181e420d4e3"
+    }
+  ],
+  "mustReject": [
+    "object moved to another logical path",
+    "object read as a different notebook",
+    "flipped ciphertext bit",
+    "flipped header kind"
+  ]
+}
