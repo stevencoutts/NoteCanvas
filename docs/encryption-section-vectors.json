@@ -1,0 +1,65 @@
+{
+  "note": "Public test vectors for locked sections. Every key here is published and must never protect real data.",
+  "format": "notecanvas-locked-section",
+  "version": 2,
+  "notebookId": "00112233-4455-6677-8899-aabbccddeeff",
+  "notebookKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "sectionId": "cccccccc-0000-4000-8000-000000000001",
+  "otherSectionId": "cccccccc-0000-4000-8000-000000000002",
+  "sectionKeyHex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+  "passphraseSlot": {
+    "slotId": "a0a0a0a0-0000-4000-8000-000000000011",
+    "passphrase": "tangerine violin quietly ascend",
+    "kdf": {
+      "alg": "pbkdf2-hmac-sha256",
+      "iterations": 600000,
+      "salt": "ERITFBUWFxgZGhscHR4fIA=="
+    },
+    "kekHex": "ad3f7a6414afdd2abcc6df20973cb84ecdceb457e52653731ed7bd30ceb43215",
+    "nonce": "ISIjJCUmJygpKiss",
+    "wrappedKey": "4uSLqi9BR+y7feBQ84yDernZd2RBj0aBlZ3cvdQRedbcRoo1Gg+iWMu2K/9/+3hv"
+  },
+  "recoverySlot": {
+    "slotId": "a0a0a0a0-0000-4000-8000-000000000012",
+    "recoveryKeyHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "display": "AEBA-GBAF-AYDQ-QCIK-BMGA-2DQP-CAIR-EEYU-CULB-OGAZ-DINR-YHI6-D4QB-G4WQ",
+    "kekHex": "de6833539fae0e56fa08a7c50640d0e4c27287283fe032ffc97fda51c0a625d4",
+    "nonce": "MTIzNDU2Nzg5Ojs8",
+    "wrappedKey": "NLfyFX0eWN6gjIWLgXmwJmVnAngdAzLzCY6GItcVdNwE2PBhdtDQZZ9TFYLmBkc+"
+  },
+  "objects": [
+    {
+      "kind": "section",
+      "logicalPath": "sections/cccccccc-0000-4000-8000-000000000001.json",
+      "plaintextUtf8": "{\"id\":\"cccccccc-0000-4000-8000-000000000001\",\"name\":\"Customers\",\"revision\":1,\"items\":[{\"page\":{\"_0\":{\"id\":\"aaaaaaaa-0000-4000-8000-000000000011\",\"title\":\"Test\"}}}]}",
+      "objectHex": "4e4345310200044142434445464748494a4b4c4d4e4f505152535455565758595a5b5c662d74cd775deebc939515af9a2ec71b04738dc3cefc82c729000206ecb3c3f5e020c4d935909e9446686c53b6f39bb92a8388616d5f9a49cacc60e6f18cc252b316f312f6cea00cb98fcbc74808305186fbf743ed73dab975b7afe064abd40ca6304554acb91fc770816ab7ce96254b19da009cf4ddeaf447d76e9acae351f202cd3b29fe9694a72668c6ad2e23aae8a222de7347ec7b7e37faa5851790ec0165474ac616838fa093b9cd86e482200a662da71a"
+    },
+    {
+      "kind": "page",
+      "logicalPath": "pages/aaaaaaaa-0000-4000-8000-000000000011.json",
+      "plaintextUtf8": "{\"id\":\"aaaaaaaa-0000-4000-8000-000000000011\",\"title\":\"Test\",\"objects\":[]}",
+      "objectHex": "4e4345310200026162636465666768696a6b6c6d6e6f707172737475767778797a7b7c61936e2d0d504dbb12b7a4fb48eef285e7af683cc3ead40b0c31687e33f3c4a9b8db10146a6d79b221526e7413e84c33b8c7f938fb137675cb0a3dbb9e0069a42b214f4674615ed150bc0685f276bef8373ce4d9b7a4e31cd5"
+    },
+    {
+      "kind": "asset",
+      "logicalPath": "assets/bbbbbbbb-0000-4000-8000-000000000011.png",
+      "plaintextHex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0dfdedddcdbdad9d8d7d6d5d4d3d2d1d0cfcecdcccbcac9c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0afaeadacabaaa9a8a7a6a5a4a3a2a1a09f9e9d9c9b9a999897969594939291908f8e8d8c8b8a898887868584838281807f7e7d7c7b7a797877767574737271706f6e6d6c6b6a696867666564636261605f5e5d5c5b5a595857565554535251504f4e4d4c4b4a494847464544434241403f3e3d3c3b3a393837363534333231302f2e2d2c2b2a292827262524232221201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+      "objectHex": "4e4345310200038182838485868788898a8b8c8d8e8f909192939495969798999a9b9c1b8d140b5904296ca22c408d7ef70f14665d16f614702eee970b230e56eba6ce87641b303fe5bcf9621dfb1f5fb21ae145c10cdd275d90e090fa34e98aa92666400b594fca5cc053f0625d18efa9011549795692a84723e1aeb4d1654301fb65b074e1ede83d7e6e65b1969d66e19bf73142ab144ba02db85e78c3552e344b612b0482cdba8ee22b9d4789eec79736b6580538d171579e731bfff1a8faf96687a4440efa2359a3000e695b92e2d46f8982c0ddb593587128eb06d75844237ded70c139d83c8b166c9932f5f509b782be3e08e96c1aa5b64f377aa722518f72aec6156cbbfe328ae49759f1bb7aea14ff903bd1e6888547a1d345823351132b3b378542a84048306158e8b8644eadee34"
+    }
+  ],
+  "notebookScopePage": {
+    "logicalPath": "pages/aaaaaaaa-0000-4000-8000-000000000011.json",
+    "objectHex": "4e434531010002a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbc50403f27f50c21e0b67ec6eadc1934f682768778856805d970812d88beb0066369f4cb5a5cf8dae45201df2623d3ab4f3de3f9954f323e88ed613ed29e8f34a7d06d9849b3e8ac2ef57b919240c7df8fa5b5af15317c012e39"
+  },
+  "mustReject": [
+    "section object read under another section id",
+    "section object moved to another logical path",
+    "section object read as a different notebook",
+    "flipped ciphertext bit",
+    "flipped header kind",
+    "section object opened with the Notebook Key",
+    "section object read as a notebook scope object",
+    "notebook scope object read as a section object",
+    "version byte changed from 2 to 1"
+  ]
+}

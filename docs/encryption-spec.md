@@ -2,6 +2,8 @@
 
 Status: **draft for review**. Nothing here is implemented yet. The format is meant to be stable enough that other people can write clients (Windows, mobile, command line) from this document alone. Reference test vectors are in `encryption-vectors.json`, produced by `tools/make-vectors.py`.
 
+Locking individual sections with their own passphrase is a separate amendment: see [encryption-locked-sections.md](encryption-locked-sections.md).
+
 ## Goals
 
 - A notebook folder can be copied to any storage (iCloud Drive, Dropbox, OneDrive, S3, WebDAV, a USB stick) and the storage provider learns the minimum possible.
