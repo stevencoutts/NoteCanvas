@@ -46,7 +46,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         } else {
             promptForNotebook()
         }
+        // The window is up. The check itself waits on the network off the main thread.
+        DispatchQueue.main.async { AppUpdate.check(interactive: false) }
     }
+
+    @objc func checkForUpdates(_ sender: Any?) { AppUpdate.check(interactive: true) }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         saveOrDiscard("Quit") ? .terminateNow : .terminateCancel
@@ -895,6 +899,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             let m = NSMenu(title: title); holder.submenu = m; return m
         }
         let app = submenu("NoteCanvas")
+        item("Check for Updates…", #selector(checkForUpdates(_:)), in: app)
         item("Quit NoteCanvas", #selector(NSApplication.terminate(_:)), "q", in: app)
         let file = submenu("File")
         item("New Notebook…", #selector(newNotebook(_:)), "n", in: file)
