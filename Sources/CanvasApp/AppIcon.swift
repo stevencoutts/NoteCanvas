@@ -2,11 +2,11 @@ import AppKit
 
 /// Dock icon drawn at launch. `swift run` has no app bundle, so an .icns never reaches the Dock.
 enum AppIcon {
-    /// Same stationery colours as `AppShell.Palette`.
-    private static let stone = NSColor(srgbRed: 0.90, green: 0.87, blue: 0.82, alpha: 1)
-    private static let paper = NSColor(srgbRed: 0.99, green: 0.975, blue: 0.955, alpha: 1)
-    private static let ink = NSColor(srgbRed: 0.24, green: 0.21, blue: 0.18, alpha: 1)
-    private static let edge = NSColor(srgbRed: 0.62, green: 0.55, blue: 0.46, alpha: 0.55)
+    private static let navyTop = NSColor(srgbRed: 0.184, green: 0.290, blue: 0.478, alpha: 1)
+    private static let navyBottom = NSColor(srgbRed: 0.102, green: 0.165, blue: 0.290, alpha: 1)
+    private static let paper = NSColor(srgbRed: 0.984, green: 0.969, blue: 0.941, alpha: 1)
+    private static let fold = NSColor(srgbRed: 0.851, green: 0.816, blue: 0.753, alpha: 1)
+    private static let amber = NSColor(srgbRed: 0.878, green: 0.565, blue: 0.227, alpha: 1)
 
     static func image() -> NSImage {
         let pixels = 1024
@@ -33,36 +33,55 @@ enum AppIcon {
         return context.makeImage()
     }
 
+    /// A cream page with a folded corner, a bold navy N and a short amber cursor line, on a navy tile.
+    /// Coordinates are on a 1024 grid with the origin at the bottom left.
     private static func draw(in rect: NSRect) {
-        stone.setFill()
-        squircle(in: rect).fill()
+        NSGradient(starting: navyTop, ending: navyBottom)?.draw(in: squircle(in: rect), angle: -90)
 
-        let page = NSRect(x: rect.midX - 300, y: rect.midY - 364, width: 600, height: 728)
-        let pagePath = NSBezierPath(roundedRect: page, xRadius: 36, yRadius: 36)
+        let page = NSBezierPath()
+        page.move(to: NSPoint(x: 290, y: 190))
+        page.line(to: NSPoint(x: 760, y: 190))
+        page.line(to: NSPoint(x: 760, y: 714))
+        page.line(to: NSPoint(x: 640, y: 834))
+        page.line(to: NSPoint(x: 290, y: 834))
+        page.close()
+
         NSGraphicsContext.current?.saveGraphicsState()
         let shadow = NSShadow()
-        shadow.shadowColor = ink.withAlphaComponent(0.22)
-        shadow.shadowOffset = NSSize(width: 0, height: -20)
-        shadow.shadowBlurRadius = 40
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        shadow.shadowOffset = NSSize(width: 0, height: -18)
+        shadow.shadowBlurRadius = 44
         shadow.set()
         paper.setFill()
-        pagePath.fill()
+        page.fill()
         NSGraphicsContext.current?.restoreGraphicsState()
 
-        edge.setStroke()
-        pagePath.lineWidth = 14
-        pagePath.stroke()
+        let corner = NSBezierPath()
+        corner.move(to: NSPoint(x: 640, y: 834))
+        corner.line(to: NSPoint(x: 640, y: 714))
+        corner.line(to: NSPoint(x: 760, y: 714))
+        corner.close()
+        fold.setFill()
+        corner.fill()
 
-        // One thick pen mark, high on the page, so it stays a blot of ink rather than lines of writing.
-        let mark = NSBezierPath()
-        mark.move(to: NSPoint(x: page.midX - 150, y: page.maxY - 290))
-        mark.curve(to: NSPoint(x: page.midX + 155, y: page.maxY - 240),
-                   controlPoint1: NSPoint(x: page.midX - 40, y: page.maxY - 360),
-                   controlPoint2: NSPoint(x: page.midX + 70, y: page.maxY - 168))
-        mark.lineWidth = 100
-        mark.lineCapStyle = .round
-        ink.setStroke()
-        mark.stroke()
+        let letter = NSBezierPath()
+        letter.move(to: NSPoint(x: 380, y: 314))
+        letter.line(to: NSPoint(x: 380, y: 584))
+        letter.line(to: NSPoint(x: 530, y: 374))
+        letter.line(to: NSPoint(x: 530, y: 584))
+        letter.lineWidth = 56
+        letter.lineCapStyle = .round
+        letter.lineJoinStyle = .round
+        navyTop.setStroke()
+        letter.stroke()
+
+        let cursor = NSBezierPath()
+        cursor.move(to: NSPoint(x: 600, y: 314))
+        cursor.line(to: NSPoint(x: 680, y: 314))
+        cursor.lineWidth = 30
+        cursor.lineCapStyle = .round
+        amber.setStroke()
+        cursor.stroke()
     }
 
     /// macOS icon superellipse (n = 5). The Dock does not mask `applicationIconImage` itself.
