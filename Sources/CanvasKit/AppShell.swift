@@ -1501,16 +1501,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     // MARK: menu actions (object-level when no text is being edited)
 
-    private var editingText: Bool { window?.firstResponder is NSTextView }
+    /// True while a text view has focus. A dialog (such as a passphrase prompt) is the key window while it is up,
+    /// so this asks the key window rather than the notebook window.
+    private var editingText: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
 
-    @objc func undoAction(_ s: Any?) { controller?.undo() }
-    @objc func redoAction(_ s: Any?) { controller?.redo() }
+    /// True when the key window is a dialog or sheet, not the notebook window. Menu edits then belong to the dialog's field.
+    private var dialogHasFocus: Bool { NSApp.keyWindow != nil && NSApp.keyWindow !== window }
+
+    @objc func undoAction(_ s: Any?) {
+        if dialogHasFocus { NSApp.sendAction(Selector(("undo:")), to: nil, from: s) } else { controller?.undo() }
+    }
+    @objc func redoAction(_ s: Any?) {
+        if dialogHasFocus { NSApp.sendAction(Selector(("redo:")), to: nil, from: s) } else { controller?.redo() }
+    }
     @objc func copyAction(_ s: Any?) {
-        if editingText { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: s) } else { controller?.copySelected() }
+        if editingText || dialogHasFocus { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: s) } else { controller?.copySelected() }
     }
     @objc func pasteAction(_ s: Any?) {
         let pasteboard = NSPasteboard.general
-        if editingText, !PageController.clipboardHasCanvasContent(pasteboard) {
+        if dialogHasFocus || (editingText && !PageController.clipboardHasCanvasContent(pasteboard)) {
             NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: s)
         } else {
             if PageController.clipboardHasCanvasContent(pasteboard) { commitEditing() }
