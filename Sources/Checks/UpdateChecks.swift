@@ -25,13 +25,22 @@ func updateChecks() {
      ]}
     """.utf8)
     let release = AppUpdate.release(from: body)
+    let zip140 = "https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-1.4.0.zip"
     checkEqual(release?.version, Optional(AppUpdate.Version(major: 1, minor: 4, patch: 0)), "release tag")
-    checkEqual(release?.zipURL.lastPathComponent, Optional("NoteCanvas-1.4.0.zip"), "picks NoteCanvas-<version>.zip")
+    checkEqual(release?.zipURL.absoluteString, Optional(zip140), "downloads NoteCanvas-<version>.zip from couttsnet")
+    checkEqual(release?.zipURL.scheme, Optional("https"), "download is https")
+    checkEqual(release?.zipURL.host, Optional("stevec.couttsnet.com"), "download host")
+    checkEqual(release?.zipURL.lastPathComponent, Optional("NoteCanvas-1.4.0.zip"), "filename has no leading v")
+    check(release?.zipURL.absoluteString.contains("github.com") == false, "GitHub asset URL is not used")
 
     let plain = Data("""
     {"tag_name":"v1.0.0","assets":[{"name":"NoteCanvas.zip","browser_download_url":"https://github.com/stevencoutts/NoteCanvas/releases/download/v1.0.0/NoteCanvas.zip"}]}
     """.utf8)
-    checkEqual(AppUpdate.release(from: plain)?.zipURL.lastPathComponent, Optional("NoteCanvas.zip"), "NoteCanvas zip is accepted")
+    checkEqual(
+        AppUpdate.release(from: plain)?.zipURL.absoluteString,
+        Optional("https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-1.0.0.zip"),
+        "GitHub asset name is ignored"
+    )
 
     let pre = Data("""
     {"tag_name":"v2.0.0-rc.1","assets":[{"name":"NoteCanvas-2.0.0-rc.1.zip","browser_download_url":"https://github.com/stevencoutts/NoteCanvas/releases/download/v2.0.0-rc.1/a.zip"}]}
@@ -41,10 +50,22 @@ func updateChecks() {
     let insecure = Data("""
     {"tag_name":"v3.0.0","assets":[{"name":"NoteCanvas-3.0.0.zip","browser_download_url":"http://github.com/stevencoutts/NoteCanvas/releases/download/v3.0.0/NoteCanvas-3.0.0.zip"}]}
     """.utf8)
-    check(AppUpdate.release(from: insecure) == nil, "download must be https")
+    let insecureRelease = AppUpdate.release(from: insecure)
+    checkEqual(
+        insecureRelease?.zipURL.absoluteString,
+        Optional("https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-3.0.0.zip"),
+        "http GitHub asset is not the download"
+    )
+    checkEqual(insecureRelease?.zipURL.scheme, Optional("https"), "download stays https")
 
-    let empty = Data(#"{"tag_name":"v3.0.0","assets":[]}"#.utf8)
-    check(AppUpdate.release(from: empty) == nil, "release without a zip")
+    let empty = Data(#"{"tag_name":"v1.0.2","assets":[]}"#.utf8)
+    checkEqual(
+        AppUpdate.release(from: empty)?.zipURL.absoluteString,
+        Optional("https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-1.0.2.zip"),
+        "tag alone names the zip"
+    )
+    check(AppUpdate.release(from: Data(#"{}"#.utf8)) == nil, "missing tag is not a release")
+    check(AppUpdate.release(from: Data()) == nil, "empty body is not a release")
 
     checkEqual(AppUpdate.currentVersion(), AppUpdate.Version(major: 0, minor: 0, patch: 0), "missing bundle version is 0.0.0")
     check(AppUpdate.installedAppURL() == nil, "swift run is not NoteCanvas.app")

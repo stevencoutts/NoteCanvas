@@ -1,6 +1,10 @@
 import AppKit
 
-/// Checks GitHub Releases and installs a newer NoteCanvas.app.
+/// Learns the latest version tag from GitHub Releases and installs a newer NoteCanvas.app.
+///
+/// The zip is always `https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-<version>.zip`
+/// (version without a leading v). GitHub asset URLs are ignored, and a failed download is not
+/// retried from GitHub.
 ///
 /// The packaged app's version is `CFBundleShortVersionString` (see `.github/package-app.sh`).
 /// `swift run` has no bundle version and is treated as 0.0.0. It can download an update and
@@ -51,28 +55,19 @@ public enum AppUpdate {
         public var zipURL: URL
     }
 
-    /// A stable release from a `/releases/latest` body, if the tag is major.minor.patch and a zip is attached.
-    /// The preferred asset is `NoteCanvas-<version>.zip`, which is what the release workflow uploads.
+    /// A stable release from a `/releases/latest` body, if the tag is major.minor.patch.
+    /// Only the tag is read. The zip URL is `downloadURL(for:)`, never a GitHub asset.
     public static func release(from data: Data) -> Release? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = json["tag_name"] as? String,
               let version = Version.parse(tag),
-              let assets = json["assets"] as? [[String: Any]] else { return nil }
-        let zips: [(name: String, url: URL)] = assets.compactMap { asset in
-            guard let name = asset["name"] as? String,
-                  name.lowercased().hasSuffix(".zip"),
-                  let raw = asset["browser_download_url"] as? String,
-                  let url = URL(string: raw),
-                  url.scheme == "https",
-                  let host = url.host?.lowercased(),
-                  host == "github.com" || host == "www.github.com" else { return nil }
-            return (name, url)
-        }
-        let exact = "NoteCanvas-\(version).zip"
-        guard let chosen = zips.first(where: { $0.name == exact })
-                ?? zips.first(where: { $0.name.localizedCaseInsensitiveContains("NoteCanvas") })
-                ?? zips.first else { return nil }
-        return Release(version: version, zipURL: chosen.url)
+              let zipURL = downloadURL(for: version) else { return nil }
+        return Release(version: version, zipURL: zipURL)
+    }
+
+    /// `https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-<version>.zip`, with no leading v.
+    static func downloadURL(for version: Version) -> URL? {
+        URL(string: "https://stevec.couttsnet.com/downloads/notecanvas/NoteCanvas-\(version).zip")
     }
 
     public static func isUpdate(_ remote: Version, replacing current: Version) -> Bool {
@@ -263,7 +258,7 @@ public enum AppUpdate {
                 return
             }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(status), let temp else {
+            guard status == 200, let temp else {
                 failure = UpdateError(message: status == 0
                     ? "NoteCanvas could not download the update."
                     : "The download failed (HTTP \(status)).")
@@ -276,7 +271,14 @@ public enum AppUpdate {
                 try FileManager.default.moveItem(at: temp, to: dest)
             } catch {
                 do { try FileManager.default.copyItem(at: temp, to: dest) }
-                catch { failure = UpdateError(message: "NoteCanvas could not save the download.") }
+                catch {
+                    failure = UpdateError(message: "NoteCanvas could not save the download.")
+                    return
+                }
+            }
+            guard fileIsZip(dest) else {
+                failure = UpdateError(message: "NoteCanvas could not open the downloaded update.")
+                return
             }
         }
         task.resume()
@@ -285,6 +287,16 @@ public enum AppUpdate {
             throw UpdateError(message: "The download timed out.")
         }
         if let failure { throw failure }
+    }
+
+    /// ZIP local-file, empty-archive, or spanned-archive header. Anything else is not a zip.
+    private static func fileIsZip(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let header = handle.readData(ofLength: 4)
+        return header == Data([0x50, 0x4b, 0x03, 0x04])
+            || header == Data([0x50, 0x4b, 0x05, 0x06])
+            || header == Data([0x50, 0x4b, 0x07, 0x08])
     }
 
     private static func findApp(in root: URL) -> URL? {
