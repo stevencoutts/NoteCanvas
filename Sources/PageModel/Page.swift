@@ -64,6 +64,39 @@ public enum PageObject: Codable, Equatable, Sendable {
     }
 }
 
+public extension Page {
+    /// Every asset file name this page refers to.
+    var assetNames: Set<String> {
+        var names = Set<String>()
+        for object in objects {
+            switch object {
+            case .image(let image): names.insert(image.asset)
+            case .attachment(let attachment): names.insert(attachment.asset)
+            case .text, .table: break
+            }
+        }
+        return names
+    }
+
+    /// A copy whose images and attachments point at new asset names. Names missing from `map` are kept.
+    func renamingAssets(_ map: [String: String]) -> Page {
+        var copy = self
+        copy.objects = objects.map { object in
+            switch object {
+            case .image(var image):
+                image.asset = map[image.asset] ?? image.asset
+                return .image(image)
+            case .attachment(var attachment):
+                attachment.asset = map[attachment.asset] ?? attachment.asset
+                return .attachment(attachment)
+            case .text, .table:
+                return object
+            }
+        }
+        return copy
+    }
+}
+
 public struct Page: Codable, Equatable, Sendable {
     public static let minContainerWidth = 40.0
     public static let minContainerHeight = 20.0

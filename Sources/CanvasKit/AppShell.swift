@@ -262,6 +262,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         notebookBookmark = try? pkg.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         currentSection = 0
         collapsed = []
+        unlockCachedSections()
+        if let live = package {
+            currentSection = live.notebook.sections.firstIndex { !(live.isSectionLocked($0.id) && !live.isSectionUnlocked($0.id)) } ?? 0
+        }
         window.title = pkg.notebook.name
         reloadPages()
         if pages.isEmpty, var p = package {
@@ -270,6 +274,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if let first = pages.first { selectNav(first.id) }
         if pkg.isEncrypted, !pkg.plaintextLeftovers().isEmpty {
             DispatchQueue.main.async { [weak self] in self?.offerToTrashPlaintext(pkg) }
+        }
+        if !pkg.interruptedLocks.isEmpty {
+            DispatchQueue.main.async { [weak self] in self?.resolveInterruptedLocks() }
         }
     }
 
@@ -346,7 +353,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             c.onPersist = { [weak self] page in self?.save(page) ?? false }
             c.storeAsset = { [weak self] data, ext in
                 guard let self, let pkg = self.package else { return nil }
-                do { return try pkg.addAsset(data: data, ext: ext) } catch { self.show(error); return nil }
+                do { return try pkg.addAsset(data: data, ext: ext, forPage: id) } catch { self.show(error); return nil }
             }
             controller = c
             canvasScroll.documentView = c.view
@@ -437,6 +444,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func show(_ error: Error) {
+        if let store = error as? StoreError, case .sectionLocked = store {
+            inform("This section is locked", "Select the section and enter its passphrase to open it first.")
+            return
+        }
         let a = NSAlert(); a.messageText = "Something went wrong"; a.informativeText = "\(error)"; a.runModal()
     }
 
@@ -531,11 +542,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
     }
 
-    private func showRecoveryKey(_ key: String) {
+    private func showRecoveryKey(_ key: String, subject: String = "notebook") {
         while true {
             let alert = NSAlert()
             alert.messageText = "Save your recovery key"
-            alert.informativeText = "If you forget the passphrase, this key is the only way to open the notebook. NoteCanvas cannot recover it for you, and it will not be shown again. Keep it somewhere safe, such as a password manager."
+            alert.informativeText = "If you forget the passphrase, this key is the only way to open the \(subject). NoteCanvas cannot recover it for you, and it will not be shown again. Keep it somewhere safe, such as a password manager."
             let field = NSTextField(wrappingLabelWithString: key)
             field.isSelectable = true
             field.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
@@ -593,6 +604,242 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             message: "The notebook is not re-encrypted. The recovery key stays the same.",
             offerRemember: false) else { return }
         do { try pkg.changePassphrase(to: secret.passphrase) } catch { show(error) }
+    }
+
+    // MARK: locked sections
+
+    private func isClosedLocked(_ id: UUID) -> Bool {
+        guard let pkg = package else { return false }
+        return pkg.isSectionLocked(id) && !pkg.isSectionUnlocked(id)
+    }
+
+    /// The Keychain account that holds a section's key on this Mac, if the user chose to remember it.
+    private func sectionKeychainAccount(_ cipher: NotebookCipher?, _ id: UUID) -> String? {
+        cipher.map { "\($0.notebookID.uuidString.lowercased())/\(id.uuidString.lowercased())" }
+    }
+
+    /// The section a menu command is about: the one right-clicked, otherwise the current section.
+    private func targetSectionID(_ sender: Any?) -> UUID? {
+        if let item = sender as? NSMenuItem, let id = menuTargetID(item) { return id }
+        return currentSectionModel()?.id
+    }
+
+    /// Opens every locked section whose key was remembered in the Keychain on this Mac.
+    private func unlockCachedSections() {
+        guard var pkg = package, pkg.hasLockedSections else { return }
+        let cipher = pkg.cipher
+        for section in pkg.notebook.sections where pkg.isSectionLocked(section.id) && !pkg.isSectionUnlocked(section.id) {
+            guard let account = sectionKeychainAccount(cipher, section.id),
+                  let cached = NotebookKeychain.load(notebookID: account) else { continue }
+            try? pkg.unlockSection(section.id, key: cached)
+        }
+        package = pkg
+    }
+
+    /// Asks for the passphrase (or the recovery key) of a closed locked section. True when it opened.
+    @discardableResult
+    private func unlockSectionInteractively(_ id: UUID) -> Bool {
+        guard var pkg = package, pkg.isSectionLocked(id) else { return false }
+        if pkg.isSectionUnlocked(id) { return true }
+        let account = sectionKeychainAccount(pkg.cipher, id)
+        if let account, let cached = NotebookKeychain.load(notebookID: account),
+           (try? pkg.unlockSection(id, key: cached)) != nil {
+            finishSectionOpen(pkg, id)
+            return true
+        }
+        let label = pkg.notebook.sections.first { $0.id == id }?.name ?? "this section"
+        var message = "Enter the passphrase for “\(label)”."
+        var useRecovery = false
+        while true {
+            let alert = NSAlert()
+            alert.messageText = useRecovery ? "Enter the section recovery key" : "Unlock section"
+            alert.informativeText = message
+            let field = secureField(useRecovery ? "Recovery key" : "Passphrase", plain: useRecovery)
+            let remember = NSButton(checkboxWithTitle: "Remember on this Mac", target: nil, action: nil)
+            remember.state = .off
+            alert.accessoryView = accessory([field, remember])
+            alert.addButton(withTitle: "Unlock")
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: useRecovery ? "Use Passphrase" : "Use Recovery Key…")
+            alert.window.initialFirstResponder = field
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                do {
+                    if useRecovery {
+                        try pkg.unlockSection(id, recoveryKey: field.stringValue)
+                    } else {
+                        try pkg.unlockSection(id, passphrase: field.stringValue)
+                    }
+                    if remember.state == .on, let account, let key = pkg.sectionKey(id) {
+                        NotebookKeychain.save(key, notebookID: account)
+                    }
+                    finishSectionOpen(pkg, id)
+                    return true
+                } catch CryptoError.noMatchingSlot {
+                    message = useRecovery ? "That recovery key did not unlock the section." : "That passphrase did not unlock the section. Try again."
+                } catch CryptoError.badRecoveryKey {
+                    message = "That recovery key is not valid. Check it for typing mistakes."
+                } catch {
+                    show(error)
+                    return false
+                }
+            case .alertThirdButtonReturn:
+                useRecovery.toggle()
+                message = useRecovery ? "Type the recovery key you saved when the section was locked." : "Enter the passphrase for “\(label)”."
+            default:
+                return false
+            }
+        }
+    }
+
+    private func finishSectionOpen(_ pkg: NotebookPackage, _ id: UUID) {
+        package = pkg
+        reloadPages()
+        outline.expandItem(navRow(id))
+        if let first = pkg.notebook.sections.first(where: { $0.id == id })?.pages.first { selectNav(first.id) }
+    }
+
+    /// Reloads the open notebook from disk after an operation stopped half way, so memory matches what is stored.
+    private func reloadFromDisk() {
+        guard let current = package, let cipher = current.cipher,
+              let reopened = try? NotebookPackage.open(at: current.url, notebookKey: cipher.key) else { return }
+        dropPage()
+        package = reopened
+        unlockCachedSections()
+        reloadPages()
+        resolveInterruptedLocks()
+    }
+
+    /// Writes the open page, then forgets it, so a section's pages can be re-encrypted underneath it.
+    /// Returns the page to open again afterwards, or nil when there is none. Nil with `ok == false` means the save failed.
+    private func prepareForSectionChange() -> (ok: Bool, reopen: UUID?) {
+        commitEditing()
+        guard flushController() else {
+            inform("This page could not be saved", "Fix the problem, then try again.")
+            return (false, nil)
+        }
+        return (true, controller?.page.id)
+    }
+
+    private func reopenPage(_ id: UUID?) {
+        dropPage()
+        reloadPages()
+        guard let id else { return }
+        selectNav(id)
+        showPage(id)
+    }
+
+    @objc func lockSectionAction(_ sender: Any?) {
+        guard let id = targetSectionID(sender), let current = package, !current.isSectionLocked(id) else { return }
+        guard current.isEncrypted else {
+            inform("Encrypt the notebook first", "A locked section lives inside an encrypted notebook. Choose File > Encrypt Notebook…, then lock the section.")
+            return
+        }
+        let name = current.notebook.sections.first { $0.id == id }?.name ?? "this section"
+        let prep = prepareForSectionChange()
+        guard prep.ok else { return }
+        guard let secret = askNewPassphrase(
+            title: "Lock “\(name)”",
+            message: "This section gets its own passphrase and recovery key. Someone who can open the notebook still cannot read it without them. If you lose both, the section cannot be recovered.",
+            offerRemember: true) else { return }
+        guard var pkg = package else { return }
+        do {
+            let recovery = try pkg.lockSection(id, passphrase: secret.passphrase)
+            package = pkg
+            if secret.remember, let key = pkg.sectionKey(id), let account = sectionKeychainAccount(pkg.cipher, id) {
+                NotebookKeychain.save(key, notebookID: account)
+            }
+            reopenPage(prep.reopen)
+            showRecoveryKey(recovery, subject: "section")
+        } catch {
+            show(error)
+            reloadFromDisk()
+        }
+    }
+
+    @objc func closeSectionAction(_ sender: Any?) {
+        guard let id = targetSectionID(sender), var pkg = package, pkg.isSectionUnlocked(id) else { return }
+        let prep = prepareForSectionChange()
+        guard prep.ok else { return }
+        let hereID = pkg.notebook.sections.first { $0.id == id }
+        let openWasHere = prep.reopen.map { open in hereID?.pages.contains { $0.id == open } ?? false } ?? false
+        pkg.lockSectionAgain(id)
+        if let account = sectionKeychainAccount(pkg.cipher, id) { NotebookKeychain.remove(notebookID: account) }
+        package = pkg
+        if openWasHere { titleField.stringValue = "" }
+        reopenPage(openWasHere ? nil : prep.reopen)
+    }
+
+    @objc func changeSectionPassphraseAction(_ sender: Any?) {
+        guard let id = targetSectionID(sender), let pkg = package, pkg.isSectionLocked(id) else { return }
+        guard pkg.isSectionUnlocked(id) || unlockSectionInteractively(id), let open = package else { return }
+        guard let secret = askNewPassphrase(
+            title: "Change section passphrase",
+            message: "The section is not re-encrypted. Its recovery key stays the same.",
+            offerRemember: false) else { return }
+        do { try open.changeSectionPassphrase(id, to: secret.passphrase) } catch { show(error) }
+    }
+
+    @objc func removeSectionLockAction(_ sender: Any?) {
+        guard let id = targetSectionID(sender), let pkg = package, pkg.isSectionLocked(id) else { return }
+        guard pkg.isSectionUnlocked(id) || unlockSectionInteractively(id) else { return }
+        let name = package?.notebook.sections.first { $0.id == id }?.name ?? "this section"
+        let confirm = NSAlert()
+        confirm.alertStyle = .warning
+        confirm.messageText = "Remove the lock from “\(name)”?"
+        confirm.informativeText = "Its pages become readable by anyone who can open the notebook, and the section's own passphrase and recovery key stop working."
+        confirm.addButton(withTitle: "Remove Lock")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        let prep = prepareForSectionChange()
+        guard prep.ok, var current = package else { return }
+        do {
+            try current.removeLock(from: id)
+            package = current
+            if let account = sectionKeychainAccount(current.cipher, id) { NotebookKeychain.remove(notebookID: account) }
+            reopenPage(prep.reopen)
+        } catch {
+            show(error)
+            reloadFromDisk()
+        }
+    }
+
+    @objc func unlockSectionFromMenu(_ sender: NSMenuItem) {
+        guard let id = menuTargetID(sender) else { return }
+        unlockSectionInteractively(id)
+    }
+
+    /// Offers to finish or undo a lock that was interrupted, one section at a time.
+    private func resolveInterruptedLocks() {
+        guard let pkg = package, let id = pkg.interruptedLocks.first else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Locking a section was interrupted"
+        alert.informativeText = "NoteCanvas stopped part way through locking a section of “\(pkg.notebook.name)”. Some of its pages are already locked and cannot be opened until this is sorted out. Enter the section's passphrase to finish locking it, or to undo it."
+        let field = secureField("Section passphrase")
+        alert.accessoryView = accessory([field])
+        alert.addButton(withTitle: "Finish Locking")
+        alert.addButton(withTitle: "Undo Locking")
+        alert.addButton(withTitle: "Not Now")
+        alert.window.initialFirstResponder = field
+        let choice = alert.runModal()
+        guard choice != .alertThirdButtonReturn, var current = package else { return }
+        do {
+            if choice == .alertFirstButtonReturn {
+                try current.finishInterruptedLock(id, passphrase: field.stringValue)
+            } else {
+                try current.rollBackInterruptedLock(id, passphrase: field.stringValue)
+            }
+            package = current
+            dropPage()
+            reloadPages()
+            if let first = pages.first { selectNav(first.id) }
+            resolveInterruptedLocks()
+        } catch CryptoError.noMatchingSlot {
+            inform("That passphrase did not match", "Nothing was changed. Choose File > Open to try again later.")
+        } catch {
+            show(error)
+        }
     }
 
     // MARK: pages sidebar
@@ -663,7 +910,7 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     public func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         guard let row = item as? SidebarRow else { return false }
-        if isSectionRow(row.id) { return true }
+        if isSectionRow(row.id) { return !isClosedLocked(row.id) }
         return (package?.notebook.sections ?? []).contains { $0.folder(row.id) != nil }
     }
 
@@ -678,7 +925,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let title = isSection ? section.name : (folder?.name ?? page?.title ?? "")
         let cell = (outlineView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("nav"), owner: self) as? NavCell) ?? NavCell()
         let color = isSection ? Palette.ink : Self.sidebarColor(folder?.colorHex ?? page?.colorHex)
-        cell.showMark(isGroup, tint: color, symbol: isSection ? "books.vertical.fill" : "folder.fill")
+        var sectionSymbol = "books.vertical.fill"
+        if isSection, package?.isSectionLocked(section.id) == true {
+            sectionSymbol = isClosedLocked(section.id) ? "lock.fill" : "lock.open.fill"
+        }
+        cell.showMark(isGroup, tint: color, symbol: isSection ? sectionSymbol : "folder.fill")
         cell.title.stringValue = title
         cell.title.font = .systemFont(ofSize: 16, weight: isSection ? .bold : (folder == nil ? .medium : .semibold))
         cell.titleColor = color
@@ -692,7 +943,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     public func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !revertingSelection, let id = selectedID() else { return }
         if let index = sectionIndex(of: id) { focusSection(index) }
-        if isSectionRow(id) || currentSectionModel()?.folder(id) != nil { return }
+        if isSectionRow(id) {
+            if isClosedLocked(id) { unlockSectionInteractively(id) }
+            return
+        }
+        if currentSectionModel()?.folder(id) != nil { return }
         showPage(id)
     }
 
@@ -804,6 +1059,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     @objc func deleteFromMenu(_ sender: NSMenuItem) {
         guard let id = menuTargetID(sender) else { return }
+        if isClosedLocked(id) {
+            inform("Unlock the section first", "A locked section can only be deleted once it is open.")
+            return
+        }
         selectNav(id)
         removePage(nil)
     }
@@ -894,6 +1153,27 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 menu.addItem(rename)
             }
             if isSection {
+                let locked = package?.isSectionLocked(id) == true
+                let open = package?.isSectionUnlocked(id) == true
+                func addItem(_ title: String, _ action: Selector) {
+                    let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                    entry.target = self
+                    entry.representedObject = id.uuidString
+                    menu.addItem(entry)
+                }
+                menu.addItem(.separator())
+                if !locked {
+                    addItem("Lock Section…", #selector(lockSectionAction(_:)))
+                } else {
+                    if open {
+                        addItem("Close Locked Section", #selector(closeSectionAction(_:)))
+                        addItem("Change Section Passphrase…", #selector(changeSectionPassphraseAction(_:)))
+                    } else {
+                        addItem("Unlock Section…", #selector(unlockSectionFromMenu(_:)))
+                    }
+                    addItem("Remove Section Lock…", #selector(removeSectionLockAction(_:)))
+                }
+                menu.addItem(.separator())
                 let delete = NSMenuItem(title: "Delete Section…", action: #selector(deleteFromMenu(_:)), keyEquivalent: "")
                 delete.target = self
                 delete.representedObject = id.uuidString
@@ -1248,6 +1528,14 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         if item.action == #selector(encryptNotebook(_:)) { return package != nil && package?.isEncrypted == false }
         if item.action == #selector(changePassphrase(_:)) { return package?.isEncrypted == true }
+        if item.action == #selector(lockSectionAction(_:)) || item.action == #selector(closeSectionAction(_:))
+            || item.action == #selector(changeSectionPassphraseAction(_:)) || item.action == #selector(removeSectionLockAction(_:)) {
+            guard let pkg = package, let id = targetSectionID(item) else { return false }
+            if item.action == #selector(lockSectionAction(_:)) { return !pkg.isSectionLocked(id) }
+            if item.action == #selector(closeSectionAction(_:)) { return pkg.isSectionUnlocked(id) }
+            if item.action == #selector(changeSectionPassphraseAction(_:)) { return pkg.isSectionLocked(id) }
+            return pkg.isSectionLocked(id)
+        }
         guard item.action == #selector(deleteObject(_:)) else { return true }
         guard controller?.hasSelectedObject == true else { return false }
         if NSApp.currentEvent?.type == .keyDown {
@@ -1658,6 +1946,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         file.addItem(.separator())
         item("Encrypt Notebook…", #selector(encryptNotebook(_:)), in: file)
         item("Change Passphrase…", #selector(changePassphrase(_:)), in: file)
+        file.addItem(.separator())
+        item("Lock Section…", #selector(lockSectionAction(_:)), in: file)
+        item("Close Locked Section", #selector(closeSectionAction(_:)), in: file)
+        item("Change Section Passphrase…", #selector(changeSectionPassphraseAction(_:)), in: file)
+        item("Remove Section Lock…", #selector(removeSectionLockAction(_:)), in: file)
         let insert = submenu("Insert")
         item("Bullet List", #selector(bullet(_:)), in: insert)
         item("Numbered List", #selector(numbered(_:)), in: insert)

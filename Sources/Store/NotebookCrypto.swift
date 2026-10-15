@@ -56,7 +56,8 @@ public struct KeysFile: Codable, Equatable {
         guard let file = try? JSONDecoder().decode(KeysFile.self, from: data), file.format == formatName else {
             throw CryptoError.badObject
         }
-        guard file.version == 1 else { throw CryptoError.unsupportedVersion(file.version) }
+        // Version 2 means the notebook has locked sections (docs/encryption-locked-sections.md). The notebook key works the same.
+        guard (1...2).contains(file.version) else { throw CryptoError.unsupportedVersion(file.version) }
         return file
     }
 }
@@ -253,7 +254,9 @@ public enum NotebookCrypto {
     // MARK: recovery key text
 
     /// 32 key bytes plus a 3 byte check, as 56 Base32 characters in groups of four.
-    public static func recoveryDisplay(_ key: Data) -> String {
+    public static func recoveryDisplay(_ key: Data) -> String { recoveryDisplay(key, checkPrefix: checkPrefix) }
+
+    static func recoveryDisplay(_ key: Data, checkPrefix: Data) -> String {
         let check = Data(SHA256.hash(data: checkPrefix + key).prefix(3))
         let raw = Array(key + check)
         var out: [UInt8] = []
@@ -277,7 +280,9 @@ public enum NotebookCrypto {
     }
 
     /// Accepts hyphens, spaces and lower case. Rejects a wrong check value as a typing mistake.
-    public static func recoveryParse(_ text: String) throws -> Data {
+    public static func recoveryParse(_ text: String) throws -> Data { try recoveryParse(text, checkPrefix: checkPrefix) }
+
+    static func recoveryParse(_ text: String, checkPrefix: Data) throws -> Data {
         let cleaned = text.uppercased().filter { $0 != "-" && $0 != " " }
         guard cleaned.utf8.count == 56 else { throw CryptoError.badRecoveryKey }
         var raw: [UInt8] = []
@@ -303,9 +308,9 @@ public enum NotebookCrypto {
 
     // MARK: helpers
 
-    private static func bytes(of id: UUID) -> Data { withUnsafeBytes(of: id.uuid) { Data($0) } }
+    static func bytes(of id: UUID) -> Data { withUnsafeBytes(of: id.uuid) { Data($0) } }
 
-    private static func randomBytes(_ count: Int) -> Data {
+    static func randomBytes(_ count: Int) -> Data {
         Data((0..<count).map { _ in UInt8.random(in: 0...255) })
     }
 }

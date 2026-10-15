@@ -285,3 +285,134 @@ func relocationChecks() {
     try! pkg.savePage(page)
     checkEqual(try! NotebookPackage.open(at: to).notebook.sections[0].pages.map(\.title), ["After"], "saving works again after relocating")
 }
+
+/// Checks the locked-section code against docs/encryption-section-vectors.json (made by tools/make-section-vectors.py).
+func sectionVectorChecks() {
+    let vectorsURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("docs/encryption-section-vectors.json")
+    guard let data = try? Data(contentsOf: vectorsURL),
+          let v = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        check(false, "the section test vectors could not be read at \(vectorsURL.path)")
+        return
+    }
+    let notebookText = v["notebookId"] as! String
+    let sectionText = v["sectionId"] as! String
+    let notebookID = UUID(uuidString: notebookText)!
+    let sectionID = UUID(uuidString: sectionText)!
+    let otherSection = UUID(uuidString: v["otherSectionId"] as! String)!
+    let notebookKey = SymmetricKey(data: hex(v["notebookKeyHex"] as! String))
+    let sectionKeyBytes = hex(v["sectionKeyHex"] as! String)
+    let sectionKey = SymmetricKey(data: sectionKeyBytes)
+
+    // slots
+    let ps = v["passphraseSlot"] as! [String: Any]
+    let kdf = ps["kdf"] as! [String: Any]
+    let salt = Data(base64Encoded: kdf["salt"] as! String)!
+    let kek = try! NotebookCrypto.passphraseKEK(passphrase: ps["passphrase"] as! String, salt: salt, iterations: kdf["iterations"] as! Int)
+    checkEqual(hexString(rawBytes(kek)), ps["kekHex"] as! String, "the section passphrase KEK matches the vector")
+    let passphraseSlot = KeySlot(type: "passphrase", id: ps["slotId"] as! String,
+                                 kdf: .init(alg: kdf["alg"] as! String, iterations: kdf["iterations"] as! Int, salt: salt),
+                                 nonce: Data(base64Encoded: ps["nonce"] as! String)!,
+                                 wrappedKey: Data(base64Encoded: ps["wrappedKey"] as! String)!)
+    let rs = v["recoverySlot"] as! [String: Any]
+    let recoveryBytes = hex(rs["recoveryKeyHex"] as! String)
+    let recoverySlot = KeySlot(type: "recovery", id: rs["slotId"] as! String, kdf: nil,
+                               nonce: Data(base64Encoded: rs["nonce"] as! String)!,
+                               wrappedKey: Data(base64Encoded: rs["wrappedKey"] as! String)!)
+    let kekRecovery = SectionCrypto.recoveryKEK(recoveryBytes, notebookID: notebookID, sectionID: sectionID)
+    checkEqual(hexString(rawBytes(kekRecovery)), rs["kekHex"] as! String, "the section recovery KEK matches the vector")
+    let file = SectionKeysFile(notebookId: notebookText, sectionId: sectionText, slots: [passphraseSlot, recoverySlot])
+    checkEqual((try? SectionCrypto.unlock(file, passphrase: ps["passphrase"] as! String)).map(rawBytes), sectionKeyBytes,
+               "the vector passphrase unlocks the Section Key")
+    checkEqual((try? SectionCrypto.unlock(file, recoveryKey: (rs["display"] as! String).lowercased())).map(rawBytes), sectionKeyBytes,
+               "the vector recovery key unlocks the Section Key")
+    checkEqual(checkThrows("a notebook recovery parser given a section recovery key") {
+        try NotebookCrypto.recoveryParse(rs["display"] as! String)
+    } as? CryptoError, .badRecoveryKey, "a section recovery key is refused as a notebook recovery key")
+    checkEqual(checkThrows("wrong section passphrase") { try SectionCrypto.unlock(file, passphrase: "not the right passphrase") } as? CryptoError,
+               .noMatchingSlot, "a wrong section passphrase is refused")
+    let reread = try! SectionKeysFile.decode(try! file.encoded())
+    checkEqual(reread, file, "a section keys file survives a write and read")
+
+    // objects
+    func sectionKind(_ name: String) -> SectionCrypto.Kind {
+        switch name {
+        case "section": return .section
+        case "page": return .page
+        default: return .asset
+        }
+    }
+    var page: (path: String, blob: Data, plain: Data)?
+    for o in v["objects"] as! [[String: Any]] {
+        let kind = sectionKind(o["kind"] as! String)
+        let path = o["logicalPath"] as! String
+        let blob = hex(o["objectHex"] as! String)
+        let expected = (o["plaintextUtf8"] as? String).map { Data($0.utf8) } ?? hex(o["plaintextHex"] as! String)
+        let opened = try? SectionCrypto.open(blob, kind: kind, logicalPath: path, notebookID: notebookID, sectionID: sectionID, sectionKey: sectionKey)
+        checkEqual(opened, expected, "the \(o["kind"] as! String) vector decrypts")
+        let sealed = try? SectionCrypto.seal(expected, kind: kind, logicalPath: path, notebookID: notebookID, sectionID: sectionID,
+                                             sectionKey: sectionKey, salt: blob.subdata(in: 7..<23), nonce: blob.subdata(in: 23..<35))
+        checkEqual(sealed, blob, "sealing the \(o["kind"] as! String) with the vector salt and nonce reproduces it")
+        check(SectionCrypto.isSectionObject(blob), "the \(o["kind"] as! String) vector is recognised as a section object")
+        if kind == .page { page = (path, blob, expected) }
+    }
+    guard let page else { check(false, "the section vectors hold a page"); return }
+
+    // objects that must be refused
+    var flipped = page.blob
+    flipped[flipped.count - 1] ^= 1
+    var otherKind = page.blob
+    otherKind[6] = SectionCrypto.Kind.asset.rawValue
+    let scoped = v["notebookScopePage"] as! [String: Any]
+    let notebookScopeBlob = hex(scoped["objectHex"] as! String)
+    var versionOne = page.blob
+    versionOne[4] = 1
+    func openSection(_ blob: Data, id: UUID = sectionID, path: String? = nil, notebook: UUID = notebookID,
+                     key: SymmetricKey = sectionKey) throws -> Data {
+        try SectionCrypto.open(blob, kind: .page, logicalPath: path ?? page.path, notebookID: notebook, sectionID: id, sectionKey: key)
+    }
+    let refused: [(String, () throws -> Data)] = [
+        ("another section id", { try openSection(page.blob, id: otherSection) }),
+        ("another logical path", { try openSection(page.blob, path: "pages/aaaaaaaa-0000-4000-8000-000000000012.json") }),
+        ("another notebook", { try openSection(page.blob, notebook: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!) }),
+        ("a flipped ciphertext bit", { try openSection(flipped) }),
+        ("a changed kind byte", { try openSection(otherKind) }),
+        ("the Notebook Key", { try openSection(page.blob, key: notebookKey) }),
+        ("a notebook scope object read as a section object", { try openSection(notebookScopeBlob) }),
+        ("a section object read as a notebook scope object", {
+            try NotebookCrypto.open(page.blob, kind: .page, logicalPath: page.path, notebookID: notebookID, notebookKey: notebookKey)
+        }),
+        ("a version byte changed from 2 to 1", {
+            try NotebookCrypto.open(versionOne, kind: .page, logicalPath: page.path, notebookID: notebookID, notebookKey: sectionKey)
+        }),
+    ]
+    for (label, attempt) in refused { checkThrows("a section object under \(label)", { try attempt() }) }
+    checkEqual((v["mustReject"] as! [String]).count, refused.count, "the section vectors list every case the checks refuse")
+    check(!SectionCrypto.isSectionObject(notebookScopeBlob), "a notebook scope object is not a section object")
+
+    // API round trips (a low iteration count keeps this quick)
+    let made = try! SectionCrypto.createKeys(notebookID: notebookID, sectionID: sectionID, passphrase: "a perfectly long passphrase", iterations: 100_000)
+    checkEqual(made.keysFile.slots.map(\.type), ["passphrase", "recovery"], "a locked section has a passphrase slot and a recovery slot")
+    checkEqual(made.recoveryKey.count, 14 * 4 + 13, "the section recovery key is 14 groups of four")
+    checkEqual((try? SectionCrypto.unlock(made.keysFile, passphrase: "a perfectly long passphrase")).map(rawBytes), rawBytes(made.sectionKey),
+               "a new section unlocks with its passphrase")
+    checkEqual((try? SectionCrypto.unlock(made.keysFile, recoveryKey: made.recoveryKey)).map(rawBytes), rawBytes(made.sectionKey),
+               "a new section unlocks with its recovery key")
+    checkEqual(checkThrows("short section passphrase") {
+        try SectionCrypto.createKeys(notebookID: notebookID, sectionID: sectionID, passphrase: "short")
+    } as? CryptoError, .passphraseTooShort, "a short section passphrase is refused")
+    let notebookKeys = try! NotebookCrypto.createKeys(passphrase: "a perfectly long passphrase", iterations: 100_000)
+    checkEqual(checkThrows("section recovery key on a notebook") {
+        try NotebookCrypto.unlock(notebookKeys.keysFile, recoveryKey: made.recoveryKey)
+    } as? CryptoError, .badRecoveryKey, "a section recovery key does not open a notebook")
+    checkEqual(checkThrows("notebook recovery key on a section") {
+        try SectionCrypto.unlock(made.keysFile, recoveryKey: notebookKeys.recoveryKey)
+    } as? CryptoError, .badRecoveryKey, "a notebook recovery key does not open a section")
+    let changed = try! SectionCrypto.changePassphrase(made.keysFile, sectionKey: made.sectionKey, newPassphrase: "another long passphrase", iterations: 100_000)
+    checkEqual((try? SectionCrypto.unlock(changed, passphrase: "another long passphrase")).map(rawBytes), rawBytes(made.sectionKey),
+               "the new section passphrase unlocks the same key")
+    check((try? SectionCrypto.unlock(changed, passphrase: "a perfectly long passphrase")) == nil, "the old section passphrase stops working")
+    checkEqual((try? SectionCrypto.unlock(changed, recoveryKey: made.recoveryKey)).map(rawBytes), rawBytes(made.sectionKey),
+               "the recovery key still works after a passphrase change")
+}

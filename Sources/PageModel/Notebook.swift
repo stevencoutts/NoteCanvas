@@ -38,6 +38,16 @@ public struct Section: Codable, Equatable, Sendable {
     public var name: String
     /// Folders and pages in display order. A folder's children can be folders too.
     public var items: [NotebookItem]
+    /// True for the stand-in that an encrypted notebook's manifest holds for a locked section: `name` is then the label the
+    /// user chose, not the real name, and `items` is empty. See docs/encryption-locked-sections.md.
+    public var locked: Bool = false
+
+    /// The stand-in for a locked section whose content is not loaded.
+    public static func placeholder(id: UUID, label: String) -> Section {
+        var section = Section(id: id, name: label, items: [])
+        section.locked = true
+        return section
+    }
 
     /// Every page in the section, folders first in the order they appear.
     public var pages: [PageRef] { Self.flatten(items) }
@@ -54,12 +64,17 @@ public struct Section: Codable, Equatable, Sendable {
         self.items = items
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, pages, items }
+    private enum CodingKeys: String, CodingKey { case id, name, pages, items, locked }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
+        if try c.decodeIfPresent(Bool.self, forKey: .locked) == true {
+            locked = true
+            items = []
+            return
+        }
         if let items = try c.decodeIfPresent([NotebookItem].self, forKey: .items) {
             self.items = items
         } else {
@@ -72,6 +87,10 @@ public struct Section: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
+        if locked {
+            try c.encode(true, forKey: .locked)
+            return
+        }
         try c.encode(items, forKey: .items)
         try c.encode(pages, forKey: .pages)
     }
