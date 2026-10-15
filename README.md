@@ -2,6 +2,10 @@
 
 A native macOS app for free-form notes. Pages are a canvas of positioned text boxes, images, tables, and attachments. Notebooks are ordinary folders on disk, and can be encrypted as a whole or section by section. OneNote section files (`.one`) can be imported, one at a time or from OneNote's own backups. The app does not sync, and it does not write `.one` files.
 
+![NoteCanvas showing a page with text boxes, a bullet list and an image](docs/images/main-window.png)
+
+*The screenshots use invented notes from `swift run DemoNotebook`.*
+
 Requires macOS 14 or later. The interface is AppKit. There are no third-party dependencies.
 
 ## What you can do
@@ -16,6 +20,16 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 - Import every OneNote backup on the laptop with **File > Import OneNote Backups…**. It scans a backup folder (it starts at OneNote for Mac's own backup location), keeps the newest dated copy of each section, and creates one notebook per OneNote notebook in a folder you choose. Section groups become `Group / Section` names. Sections that cannot be read are listed and skipped. The backup files are only read.
 
 Import is lossy by design. The app keeps its own page model. Anything it cannot represent is counted in a report saved inside the notebook (`imports/<section-id>.json`). That report is counts and ids only, not note text.
+
+## Screenshots
+
+Tables sit on the page like any other object:
+
+![A page with a table](docs/images/sowing-table.png)
+
+Encryption is a passphrase and a recovery key, chosen when the notebook is created or later:
+
+<img src="docs/images/encrypt-dialog.png" alt="The Encrypt this notebook dialog" width="332">
 
 ## Notebook layout
 
