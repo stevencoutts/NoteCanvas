@@ -19,7 +19,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Select Swift
         run: bash .github/swift-toolchain.sh
       - name: Resolve version
