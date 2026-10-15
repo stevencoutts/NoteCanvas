@@ -49,6 +49,44 @@ final class BoxTextView: NSTextView {
         if ok { onFocus?() }
         return ok
     }
+
+    /// Command-click opens a link. A plain click still places the caret, so the text stays editable.
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), let url = link(at: event) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func link(at event: NSEvent) -> URL? {
+        guard let layout = layoutManager, let container = textContainer, let storage = textStorage, storage.length > 0 else { return nil }
+        let local = convert(event.locationInWindow, from: nil)
+        let point = NSPoint(x: local.x - textContainerOrigin.x, y: local.y - textContainerOrigin.y)
+        var fraction: CGFloat = 0
+        let glyph = layout.glyphIndex(for: point, in: container, fractionOfDistanceThroughGlyph: &fraction)
+        guard glyph < layout.numberOfGlyphs,
+              layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(point) else { return nil }
+        let index = layout.characterIndexForGlyph(at: glyph)
+        guard index < storage.length, let value = storage.attribute(.link, at: index, effectiveRange: nil) else { return nil }
+        if let url = value as? URL { return url }
+        return (value as? String).flatMap { URL(string: $0) }
+    }
+
+    /// Marks every web address, "www." address and email address that is not already a link.
+    static func linkified(_ text: NSAttributedString) -> NSAttributedString {
+        guard text.length > 0, let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return text }
+        let result = NSMutableAttributedString(attributedString: text)
+        detector.enumerateMatches(in: result.string, options: [], range: NSRange(location: 0, length: result.length)) { match, _, _ in
+            guard let match, let url = match.url else { return }
+            var linked = false
+            result.enumerateAttribute(.link, in: match.range) { value, _, stop in
+                if value != nil { linked = true; stop.pointee = true }
+            }
+            if !linked { result.addAttribute(.link, value: url.absoluteString, range: match.range) }
+        }
+        return result
+    }
 }
 
 final class ContainerView: NSView, NSTextViewDelegate {
@@ -79,6 +117,11 @@ final class ContainerView: NSView, NSTextViewDelegate {
         super.init(frame: .zero)
         textView.drawsBackground = false
         textView.isRichText = true
+        textView.isAutomaticLinkDetectionEnabled = true   // typed or pasted addresses become links
+        textView.enabledTextCheckingTypes = NSTextCheckingResult.CheckingType.link.rawValue
+        textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor,
+                                       .underlineStyle: NSUnderlineStyle.single.rawValue,
+                                       .cursor: NSCursor.pointingHand]
         textView.allowsUndo = false                 // undo is handled by PageController
         textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
@@ -134,7 +177,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
     /// appears or disappears does not leave the caret inside or before it.
     func setParagraphs(_ paragraphs: [Paragraph]) {
         let selection = AttributedBridge.bodySelection(textView.selectedRange(), in: textView.attributedString())
-        let text = AttributedBridge.attributed(from: paragraphs)
+        let text = BoxTextView.linkified(AttributedBridge.attributed(from: paragraphs))
         textView.textStorage?.setAttributedString(text)
         let range = AttributedBridge.range(of: selection, in: text)
         textView.setSelectedRange(range)

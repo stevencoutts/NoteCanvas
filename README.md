@@ -11,12 +11,13 @@ Requires macOS 14 or later. The interface is AppKit. There are no third-party de
 ## What you can do
 
 - The title bar shows the app name and version, then the notebook's name. Click the name to rename the notebook. The folder on disk keeps its name.
-- Drag sections to reorder them, and drag pages and folders onto any section or folder, including one in a different section. To use another notebook, right-click a section, folder or page and choose **Move to Another Notebook…** or **Copy to Another Notebook…**. Images come with the pages. An encrypted notebook asks for its passphrase, and what arrives is stored encrypted. A move removes the original only once the copy has finished.
+- Drag sections to reorder them. Drop a section onto another section to fold it in as a folder. Drag pages and folders onto any section or folder, including one in a different section. To use another notebook, right-click a section, folder or page and choose **Move to Another Notebook…** or **Copy to Another Notebook…**. Images come with the pages. An encrypted notebook asks for its passphrase, and what arrives is stored encrypted. A move removes the original only once the copy has finished.
 - Hide the whole sidebar with the sidebar button at the left of the toolbar, or **View > Hide Sidebar** (Control-Command-S), to give the page the full window. The choice is remembered. **View > Collapse All Sections** (Option-Command-minus) folds every section and folder, and **Expand All Sections** opens them again.
 - Place, move, resize, and format text boxes. Undo and redo cover those edits.
 - Organise notes as sections, folders and pages in a sidebar tree. Every section and folder folds away. Add, rename and delete sections from the sidebar buttons, the File menu, or a right-click.
 - Encrypt a notebook with a passphrase and a recovery key, when creating it or later from **File > Encrypt Notebook…**. Pages, images and the section structure are stored encrypted. The format is written down in `docs/encryption-spec.md`. There is no cloud sync yet.
 - Lock a single section inside an encrypted notebook with its own passphrase and recovery key (right-click a section, **Lock Section…**). Someone who can open the notebook still cannot read a locked section. The format is in `docs/encryption-locked-sections.md`.
+- Web and email addresses in text become links as you type or paste them, and in existing notes. Command-click a link to open it. A plain click still places the caret.
 - Insert bullet and numbered lists, and insert images from disk or the clipboard.
 - Draw imported images, tables, and attachments. Move, copy, and delete them. Editing tools for tables and ink are not in this version.
 - Import a `.one` section with **File > Import .one…**. The import runs in the background and can be cancelled. The source file is only read. A failed or cancelled import does not add a section.
