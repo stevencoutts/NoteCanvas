@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoteCanvas</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app no-notebook">
+    <header class="topbar">
+      <span class="app-name">NoteCanvas</span>
+      <span class="dot" aria-hidden="true">·</span>
+      <input id="notebook-name" class="notebook-name" placeholder="Notebook name" disabled aria-label="Notebook name">
+      <span class="spacer"></span>
+      <button id="open-btn" type="button">Open</button>
+      <button id="new-btn" type="button">New</button>
+    </header>
+    <div id="banner" class="banner" hidden></div>
+    <div class="workspace">
+      <aside id="sidebar" class="sidebar">
+        <div class="section-row">
+          <select id="section-popup" class="section-popup" aria-label="Section"></select>
+          <button id="section-menu-btn" type="button" title="Section actions" aria-label="Section actions">…</button>
+        </div>
+        <div id="nav" class="nav" role="tree"></div>
+        <div class="side-tools">
+          <button id="add-page" type="button" title="New page">+ Page</button>
+          <button id="add-folder" type="button" title="New folder">+ Folder</button>
+          <button id="remove-item" type="button" title="Delete page or remove folder">−</button>
+        </div>
+      </aside>
+      <div class="editor-col">
+        <div id="formatbar" class="formatbar" role="toolbar" aria-label="Format">
+          <button id="sidebar-btn" type="button" title="Hide or show the sidebar">Sidebar</button>
+          <span class="sep"></span>
+          <button id="undo-btn" type="button" title="Undo">Undo</button>
+          <button id="redo-btn" type="button" title="Redo">Redo</button>
+          <span class="sep"></span>
+          <button id="bullet-btn" type="button" title="Bullet list">Bullets</button>
+          <button id="number-btn" type="button" title="Numbered list">Numbered</button>
+          <button id="image-btn" type="button" title="Insert an image">Image</button>
+          <span class="sep"></span>
+          <button id="bold-btn" type="button" title="Bold" aria-pressed="false"><b>B</b></button>
+          <button id="italic-btn" type="button" title="Italic" aria-pressed="false"><i>I</i></button>
+          <button id="underline-btn" type="button" title="Underline" aria-pressed="false"><u>U</u></button>
+          <button id="strike-btn" type="button" title="Strikethrough" aria-pressed="false"><s>S</s></button>
+          <select id="size-select" aria-label="Font size" title="Font size">
+            <option>10</option>
+            <option>12</option>
+            <option selected>14</option>
+            <option>18</option>
+            <option>24</option>
+            <option>32</option>
+          </select>
+          <input id="color-input" type="color" value="#3D362E" aria-label="Text color" title="Text color">
+          <select id="heading-select" aria-label="Heading" title="Heading">
+            <option value="0">Body</option>
+            <option value="1">Heading 1</option>
+            <option value="2">Heading 2</option>
+            <option value="3">Heading 3</option>
+          </select>
+          <span class="sep"></span>
+          <button id="align-left" type="button" title="Align left">Left</button>
+          <button id="align-center" type="button" title="Center">Center</button>
+          <button id="align-right" type="button" title="Align right">Right</button>
+          <button id="indent-more" type="button" title="Indent">Indent</button>
+          <button id="indent-less" type="button" title="Outdent">Outdent</button>
+          <span class="sep"></span>
+          <button id="front-btn" type="button" title="Bring to front">Front</button>
+          <button id="back-btn" type="button" title="Send to back">Back</button>
+        </div>
+        <div class="paper">
+          <input id="page-title" class="page-title" placeholder="Page title" disabled aria-label="Page title">
+          <div id="sheet" class="sheet">
+            <div id="canvas" class="canvas" tabindex="0"></div>
+          </div>
+          <div id="welcome" class="welcome">
+            <h1>NoteCanvas</h1>
+            <p>Open a notebook folder, or create one. It uses the same <code>notebook.json</code>, page files, and assets as the Mac app, so a notebook can move between them.</p>
+            <div class="welcome-actions">
+              <button id="welcome-open" type="button">Open Notebook</button>
+              <button id="welcome-new" type="button">New Notebook</button>
+              <button id="reopen-btn" type="button" hidden>Reopen last notebook</button>
+            </div>
+            <p id="browser-note" class="note" hidden>This browser cannot open a folder. Use Chrome or Edge, and open this page from a local web server.</p>
+            <p class="note">Encrypted notebooks, and OneNote <code>.one</code> import, stay in the Mac app.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <input id="image-input" type="file" accept="image/*" multiple hidden>
+  <div id="menu" class="menu" hidden role="menu"></div>
+  <div id="drop-line" class="drop-line" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

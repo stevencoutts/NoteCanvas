@@ -64,6 +64,21 @@ public enum PageObject: Codable, Equatable, Sendable {
     }
 }
 
+/// Actions in a canvas object's context menu, in menu order.
+public enum ObjectMenuItem: Equatable, Sendable {
+    case open, delete, copy, bringToFront, sendToBack
+}
+
+public extension PageObject {
+    /// A table has no Open action: the app does not edit tables.
+    var contextMenuItems: [ObjectMenuItem] {
+        switch self {
+        case .table: return [.delete, .copy, .bringToFront, .sendToBack]
+        case .text, .image, .attachment: return [.open, .delete, .copy, .bringToFront, .sendToBack]
+        }
+    }
+}
+
 public extension Page {
     /// Every asset file name this page refers to.
     var assetNames: Set<String> {
@@ -165,6 +180,11 @@ public struct Page: Codable, Equatable, Sendable {
             y = lowest.y + lowest.height + gap
         }
         return (nearX, y)
+    }
+
+    /// Where the next item in a downward stack goes. Nothing reserved means `y`; otherwise `gap` below the lowest reserved frame.
+    public static func stackedY(reserved: [Frame], y: Double, gap: Double = 16) -> Double {
+        reserved.map { $0.y + $0.height + gap }.max() ?? y
     }
 
     /// The dragged corner follows the pointer. The opposite corner stays put, and the picture keeps its proportions.

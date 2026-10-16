@@ -99,7 +99,8 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var revertingSelection = false
     private var currentSection = 0
     private var notebookBookmark: Data?        // follows the notebook folder if it is moved while open
-    private var collapsed = Set<UUID>()         // sections and folders the user has folded away
+    private var collapsed = Set<UUID>()         // sections and folders the user has folded; remembered per notebook
+    private var applyingOutline = false         // putting those folds back must not be recorded as a new toggle
     private var importCancel: ImportCancelFlag?
     private var progressSheet: NSPanel?
     private var progressLabel: NSTextField?
@@ -141,8 +142,10 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         } else {
             promptForNotebook()
         }
-        // The window is up. The check itself waits on the network off the main thread.
-        DispatchQueue.main.async { AppUpdate.check(interactive: false) }
+        // The window is up. Only an installed app with a real version checks; `swift run` must not prompt.
+        if AppUpdate.installedVersion() != nil {
+            DispatchQueue.main.async { AppUpdate.check(interactive: false) }
+        }
     }
 
     @objc func checkForUpdates(_ sender: Any?) { AppUpdate.check(interactive: true) }
@@ -266,7 +269,6 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         LastNotebook.remember(pkg.url)
         notebookBookmark = try? pkg.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         currentSection = 0
-        collapsed = []
         unlockCachedSections()
         if let live = package {
             currentSection = live.notebook.sections.firstIndex { !(live.isSectionLocked($0.id) && !live.isSectionUnlocked($0.id)) } ?? 0
@@ -276,7 +278,11 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if pages.isEmpty, var p = package {
             _ = try? p.addPage(title: "Untitled Page"); package = p; reloadPages()
         }
-        if let first = pages.first { selectNav(first.id) }
+        // Open a page, but do not unfold a section or folder the user left folded.
+        if let first = pages.first {
+            if outline.row(forItem: navRow(first.id)) >= 0 { selectNav(first.id) }
+            else { showPage(first.id) }
+        }
         if pkg.isEncrypted, !pkg.plaintextLeftovers().isEmpty {
             DispatchQueue.main.async { [weak self] in self?.offerToTrashPlaintext(pkg) }
         }
@@ -291,12 +297,25 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         pages = sections.indices.contains(currentSection) ? sections[currentSection].pages : []
         let live = Set(sections.flatMap { [$0.id] + $0.items.flatMap { Self.itemIDs($0) } })
         navRows = navRows.filter { live.contains($0.key) }
-        collapsed = collapsed.filter { live.contains($0) }
+        let collapsible = collapsibleIDs(in: sections)
+        if let url = package?.url {
+            let saved = SidebarCollapse.load(folder: url)
+            let folded = SidebarCollapse.restored(saved: saved, collapsible: collapsible)
+            // Drop ids for rows that are gone. An empty outline is not a reason to forget them.
+            if !collapsible.isEmpty, folded != saved { SidebarCollapse.store(folded, folder: url) }
+            collapsed = folded
+        } else {
+            collapsed = []
+        }
+        applyingOutline = true
         outline.reloadData()
         for section in sections {
             expandUnlessCollapsed(section.id)
             expandFolders(in: section.items)
         }
+        // Last, so a reload that expands the whole outline cannot leave a folded row open.
+        for id in collapsed { outline.collapseItem(navRow(id)) }
+        applyingOutline = false
     }
 
     private func expandUnlessCollapsed(_ id: UUID) {
@@ -313,11 +332,17 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     public func outlineViewItemDidCollapse(_ notification: Notification) {
-        if let row = notification.userInfo?["NSObject"] as? SidebarRow { collapsed.insert(row.id) }
+        guard !applyingOutline, let row = notification.userInfo?["NSObject"] as? SidebarRow,
+              isCollapsibleRow(row.id) else { return }
+        collapsed.insert(row.id)
+        if let url = package?.url { SidebarCollapse.setCollapsed(row.id, true, folder: url) }
     }
 
     public func outlineViewItemDidExpand(_ notification: Notification) {
-        if let row = notification.userInfo?["NSObject"] as? SidebarRow { collapsed.remove(row.id) }
+        guard !applyingOutline, let row = notification.userInfo?["NSObject"] as? SidebarRow,
+              isCollapsibleRow(row.id) else { return }
+        collapsed.remove(row.id)
+        if let url = package?.url { SidebarCollapse.setCollapsed(row.id, false, folder: url) }
     }
 
     /// The index of the section that is, or holds, the row with this id.
@@ -411,7 +436,9 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                                    relativeTo: nil, bookmarkDataIsStale: &stale),
               moved.standardizedFileURL != pkg.url.standardizedFileURL,
               FileManager.default.fileExists(atPath: moved.path) else { return }
+        let old = pkg.url
         package?.relocate(to: moved)
+        SidebarCollapse.relocate(from: old, to: moved)
         LastNotebook.remember(moved)
         notebookBookmark = try? moved.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
     }
@@ -2094,18 +2121,40 @@ public final class AppShell: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         return ids
     }
 
+    private func collapsibleIDs(in sections: [Section]) -> Set<UUID> {
+        var ids = Set<UUID>()
+        for section in sections {
+            ids.insert(section.id)
+            ids.formUnion(folderIDs(in: section.items))
+        }
+        return ids
+    }
+
+    private func isCollapsibleRow(_ id: UUID) -> Bool {
+        isSectionRow(id) || (package?.notebook.sections ?? []).contains { $0.folder(id) != nil }
+    }
+
     @objc func collapseAllSections(_ sender: Any?) {
-        for section in package?.notebook.sections ?? [] {
+        let sections = package?.notebook.sections ?? []
+        collapsed = collapsibleIDs(in: sections)
+        if let url = package?.url { SidebarCollapse.store(collapsed, folder: url) }
+        applyingOutline = true
+        for section in sections {
             for id in folderIDs(in: section.items) { outline.collapseItem(navRow(id)) }
             outline.collapseItem(navRow(section.id))
         }
+        applyingOutline = false
     }
 
     @objc func expandAllSections(_ sender: Any?) {
+        collapsed = []
+        if let url = package?.url { SidebarCollapse.store([], folder: url) }
+        applyingOutline = true
         for section in package?.notebook.sections ?? [] {
             outline.expandItem(navRow(section.id))
             for id in folderIDs(in: section.items) { outline.expandItem(navRow(id)) }
         }
+        applyingOutline = false
     }
 
     @objc func toggleSidebar(_ sender: Any?) {

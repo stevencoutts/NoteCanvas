@@ -193,6 +193,50 @@ func assetAndSectionChecks() {
     }
 }
 
+func sidebarCollapseChecks() {
+    let section = UUID()
+    let folder = UUID()
+    let page = UUID()
+    let gone = UUID()
+    let neverFolded = UUID()
+    checkEqual(SidebarCollapse.restored(saved: [folder, page, gone], collapsible: [section, folder, neverFolded]),
+               [folder], "only a folded section or folder that still exists is restored")
+    checkEqual(SidebarCollapse.restored(saved: [], collapsible: [section, folder]),
+               [], "a row that was never folded stays expanded")
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "NoteCanvas.checks.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let first = root.appendingPathComponent("A.notebook")
+    let second = root.appendingPathComponent("B.notebook")
+    try! FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+    try! FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+    SidebarCollapse.setCollapsed(folder, true, folder: first, defaults: defaults)
+    SidebarCollapse.setCollapsed(section, true, folder: second, defaults: defaults)
+    checkEqual(SidebarCollapse.load(folder: first, defaults: defaults), [folder], "a notebook keeps its own folded rows")
+    checkEqual(SidebarCollapse.load(folder: second, defaults: defaults), [section], "another notebook keeps different folded rows")
+
+    let renamed = root.appendingPathComponent("A2.notebook")
+    try! FileManager.default.moveItem(at: first, to: renamed)
+    checkEqual(SidebarCollapse.load(folder: renamed, defaults: defaults), [folder], "renaming the notebook folder keeps its folded rows")
+    checkEqual(SidebarCollapse.load(folder: second, defaults: defaults), [section], "renaming one notebook leaves the other alone")
+
+    SidebarCollapse.setCollapsed(folder, false, folder: renamed, defaults: defaults)
+    checkEqual(SidebarCollapse.load(folder: renamed, defaults: defaults), [], "expanding a row forgets that it was folded")
+    checkEqual(SidebarCollapse.load(folder: second, defaults: defaults), [section], "expanding a row in one notebook leaves the other folded")
+
+    SidebarCollapse.setCollapsed(folder, true, folder: renamed, defaults: defaults)
+    check(SidebarCollapse.folderIdentity(of: renamed) != SidebarCollapse.folderIdentity(of: second),
+          "two notebook folders do not share an identity")
+    SidebarCollapse.relocate(from: renamed, to: second, defaults: defaults)
+    checkEqual(SidebarCollapse.load(folder: second, defaults: defaults), [folder], "folded rows follow a folder identity when it changes")
+    checkEqual(SidebarCollapse.load(folder: renamed, defaults: defaults), [], "the previous folder identity no longer has them")
+}
+
 func lastNotebookChecks() {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("nc-\(UUID().uuidString)")
     try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

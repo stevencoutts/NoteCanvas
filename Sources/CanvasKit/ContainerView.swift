@@ -25,9 +25,16 @@ final class DragStrip: NSView {
         ring.stroke()
     }
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
         anchor = event.locationInWindow
         total = .zero
         onBegin?()
+    }
+    /// The strip is part of the object. A right-click here is the object's menu, same as on its content.
+    override func menu(for event: NSEvent) -> NSMenu? { superview?.menu(for: event) }
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menu(for: event) else { super.rightMouseDown(with: event); return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
     override func mouseDragged(with event: NSEvent) {
         if followsPointer {
@@ -50,13 +57,58 @@ final class BoxTextView: NSTextView {
         return ok
     }
 
+    /// A file dropped on a box is an object on the page. It must not be typed into the text.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        FileDrag.isFile(sender) ? .copy : super.draggingEntered(sender)
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        FileDrag.isFile(sender) ? .copy : super.draggingUpdated(sender)
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        FileDrag.isFile(sender) ? true : super.prepareForDragOperation(sender)
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard FileDrag.isFile(sender) else { return super.performDragOperation(sender) }
+        let urls = FileDrag.urls(sender)
+        guard !urls.isEmpty, let page = enclosingPage else { return false }
+        page.onDropFiles?(urls, page.convert(sender.draggingLocation, from: nil))
+        return true
+    }
+
+    private var enclosingPage: PageView? {
+        var view = superview
+        while let current = view {
+            if let page = current as? PageView { return page }
+            view = current.superview
+        }
+        return nil
+    }
+
     /// Command-click opens a link. A plain click still places the caret, so the text stays editable.
+    /// Control-click and right-click are the object's menu, including when the pointer is over the text.
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
         if event.modifierFlags.contains(.command), let url = link(at: event) {
             NSWorkspace.shared.open(url)
             return
         }
         super.mouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? { enclosingContainer?.menu(for: event) }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menu(for: event) else { super.rightMouseDown(with: event); return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    private var enclosingContainer: ContainerView? {
+        var view = superview
+        while let current = view {
+            if let box = current as? ContainerView { return box }
+            view = current.superview
+        }
+        return nil
     }
 
     private func link(at event: NSEvent) -> URL? {
@@ -103,6 +155,7 @@ final class ContainerView: NSView, NSTextViewDelegate {
     var onDragEnd: (() -> Void)?
     var onTextChange: ((NSAttributedString) -> Void)?
     var onEndEditing: (() -> Void)?
+    var onRequestMenu: (() -> NSMenu?)?
     var onFocus: (() -> Void)? {
         get { textView.onFocus }
         set { textView.onFocus = newValue }
@@ -155,7 +208,17 @@ final class ContainerView: NSView, NSTextViewDelegate {
                                 height: max(h - Metrics.handleHeight - Metrics.inset * 2, 1))
     }
 
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(textView) }
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
+        window?.makeFirstResponder(textView)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? { onRequestMenu?() }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menu(for: event) else { super.rightMouseDown(with: event); return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
 
     /// The drag strip stays almost invisible until the box is selected or being edited.
     private func updateChrome() {

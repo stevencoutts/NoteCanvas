@@ -6,7 +6,7 @@ public final class PageController {
     public private(set) var page: Page
     /// Writes the page; returns false when the write failed.
     public var onPersist: ((Page) -> Bool)?
-    /// Stores pasted bytes in the notebook and returns the asset file name.
+    /// Stores pasted or dropped bytes in the notebook and returns the asset file name.
     public var storeAsset: ((Data, String) -> String?)?
     public var view: NSView { pageView }
     public var hasSelectedObject: Bool { selected != nil }
@@ -24,6 +24,7 @@ public final class PageController {
     private var persistWork: DispatchWorkItem?
     private var isRefreshing = false                // true while PageView.sync runs; focus changes then are programmatic
     private var sparing: UUID?                      // box whose own strip was grabbed: losing focus must not remove it
+    private let objectMenuTarget = ObjectMenuTarget()
 
     public init(page: Page, assets: @escaping (String) -> Data? = { _ in nil }) {
         self.page = page
@@ -31,6 +32,7 @@ public final class PageController {
         pageView.configure = { [weak self] v in self?.wire(v) }
         pageView.configureObject = { [weak self] v in self?.wireObject(v) }
         pageView.onBackgroundClick = { [weak self] point in self?.backgroundClicked(at: point) }
+        pageView.onDropFiles = { [weak self] urls, point in self?.dropFiles(urls, at: point) }
         self.page.relayout(using: measurer)
         refresh(force: true)
     }
@@ -51,10 +53,11 @@ public final class PageController {
         v.onTextChange = { [weak self] text in self?.textEdited(id, text) }
         v.onEndEditing = { [weak self] in self?.endEditing(id) }
         v.onFocus = { [weak self] in self?.textFocused() }
+        v.onRequestMenu = { [weak self] in self?.objectMenu(selecting: id) }
     }
 
     /// Images, tables and attachments move, select, copy, delete and reorder like text boxes; their content is read-only.
-    /// An image also resizes from any corner, keeping its proportions.
+    /// An image also resizes from any corner, keeping its proportions. Right-click offers those actions, plus Open when there is one.
     private func wireObject(_ v: ObjectView) {
         let id = v.id
         if case .image? = page.objects.first(where: { $0.id == id }) { v.cornersEnabled = true }
@@ -66,6 +69,7 @@ public final class PageController {
             self.drag { $0.setImageFrame(id, frame) }
         }
         v.onDragEnd = { [weak self] in self?.endDrag() }
+        v.onRequestMenu = { [weak self] in self?.objectMenu(selecting: id) }
     }
 
     private func refresh(force: Bool) {
@@ -121,13 +125,17 @@ public final class PageController {
         refresh(force: false)
     }
 
-    /// Grabbing a strip selects the box as an object, so keyboard focus moves to the page: Copy, Paste and
+    /// A click or a right-click selects the box as an object, so keyboard focus moves to the page: Copy, Paste and
     /// Backspace then act on the selected box, not on whichever text view had focus.
-    private func beginDrag(_ id: UUID) {
+    private func selectAsObject(_ id: UUID) {
         sparing = id
         pageView.window?.makeFirstResponder(pageView)   // ends text editing; other empty boxes remove themselves
         sparing = nil
         select(id)
+    }
+
+    private func beginDrag(_ id: UUID) {
+        selectAsObject(id)
         dragStart = page
         dragRecorded = false
     }
@@ -244,13 +252,97 @@ public final class PageController {
             objects.append(placed(.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name)),
                                   reserved: objects.map(\.frame)))
         }
-        guard !objects.isEmpty else { return }
-        selected = objects.last?.id
-        commit { page in for object in objects { page.add(object) } }
+        commitAdded(objects)
     }
 
     public func bringToFront() { if let id = selected { commit { $0.bringToFront(id) } } }
     public func sendToBack() { if let id = selected { commit { $0.sendToBack(id) } } }
+
+    /// Right-click selects the object, then offers the actions for its kind.
+    private func objectMenu(selecting id: UUID) -> NSMenu? {
+        guard page.objects.contains(where: { $0.id == id }) else { return nil }
+        selectAsObject(id)
+        guard let object = page.objects.first(where: { $0.id == id }) else { return nil }
+        objectMenuTarget.open = { [weak self] in self?.openSelected() }
+        objectMenuTarget.delete = { [weak self] in self?.deleteSelected() }
+        objectMenuTarget.copy = { [weak self] in self?.copySelected() }
+        objectMenuTarget.bringToFront = { [weak self] in self?.bringToFront() }
+        objectMenuTarget.sendToBack = { [weak self] in self?.sendToBack() }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.allowsContextMenuPlugIns = false
+        for item in object.contextMenuItems {
+            let entry = NSMenuItem(title: Self.menuTitle(item), action: Self.menuSelector(item), keyEquivalent: "")
+            entry.target = objectMenuTarget
+            menu.addItem(entry)
+        }
+        return menu
+    }
+
+    /// Open a text box for editing. Open an image or attachment by handing its bytes to the default app.
+    /// Assets are often encrypted, so the only readable copy is the one `loadAsset` returns; write that to a temp file.
+    private func openSelected() {
+        guard let id = selected, let object = page.objects.first(where: { $0.id == id }) else { return }
+        switch object {
+        case .text:
+            pageView.focus(id)
+        case .image(let image):
+            openStoredFile(asset: image.asset, preferred: "Image")
+        case .attachment(let file):
+            openStoredFile(asset: file.asset, preferred: file.displayName)
+        case .table:
+            break
+        }
+    }
+
+    private func openStoredFile(asset: String, preferred: String) {
+        guard let data = pageView.assets(asset), !data.isEmpty else { NSSound.beep(); return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NoteCanvas", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = directory.appendingPathComponent(Self.exportFileName(preferred: preferred, asset: asset))
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            if !NSWorkspace.shared.open(url) { NSSound.beep() }
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    /// One path component, safe to give another app. Directory pieces are dropped. The asset's extension
+    /// is added when the preferred name has none, so Word or Preview can tell the type.
+    private static func exportFileName(preferred: String, asset: String) -> String {
+        let slashed = preferred.replacingOccurrences(of: "\\", with: "/")
+        var name = (slashed as NSString).lastPathComponent
+        name = name.components(separatedBy: CharacterSet(charactersIn: ":").union(.controlCharacters)).joined()
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty || name == "." || name == ".." { name = "File" }
+        let ext = String((asset as NSString).pathExtension.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(8))
+        if (name as NSString).pathExtension.isEmpty, !ext.isEmpty { name += ".\(ext)" }
+        if name.utf8.count > 200 { name = ext.isEmpty ? "File" : "File.\(ext)" }
+        return name
+    }
+
+    private static func menuTitle(_ item: ObjectMenuItem) -> String {
+        switch item {
+        case .open: return "Open"
+        case .delete: return "Delete"
+        case .copy: return "Copy"
+        case .bringToFront: return "Bring to Front"
+        case .sendToBack: return "Send to Back"
+        }
+    }
+
+    private static func menuSelector(_ item: ObjectMenuItem) -> Selector {
+        switch item {
+        case .open: return #selector(ObjectMenuTarget.openItem(_:))
+        case .delete: return #selector(ObjectMenuTarget.deleteItem(_:))
+        case .copy: return #selector(ObjectMenuTarget.copyItem(_:))
+        case .bringToFront: return #selector(ObjectMenuTarget.frontItem(_:))
+        case .sendToBack: return #selector(ObjectMenuTarget.backItem(_:))
+        }
+    }
 
     public func deleteSelected() {
         guard let id = selected else { return }
@@ -286,8 +378,7 @@ public final class PageController {
            let object = try? JSONDecoder().decode(PageObject.self, from: data) {
             var copy = object.duplicated(dx: 20, dy: 20)
             if case .image = copy { copy = placed(copy, reserved: []) }
-            selected = copy.id
-            commit { $0.add(copy) }
+            commitAdded([copy])
             return
         }
         var objects: [PageObject] = []
@@ -301,17 +392,7 @@ public final class PageController {
         }
         if objects.isEmpty {
             for url in pastedFileURLs(pasteboard) {
-                guard let data = try? Data(contentsOf: url), !data.isEmpty,
-                      let name = storeAsset?(data, url.pathExtension) else { continue }
-                let isImage = (UTType(filenameExtension: url.pathExtension) ?? .data).conforms(to: .image)
-                if isImage, let image = NSImage(data: data) {
-                    let size = fitted(image.size)
-                    place(.image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name)))
-                } else {
-                    let display = url.lastPathComponent.isEmpty ? "Attachment" : url.lastPathComponent
-                    place(.attachment(AttachmentObject(id: UUID(), frame: Frame(x: 0, y: 0, width: 160, height: 64),
-                                                        asset: name, displayName: display)))
-                }
+                if let object = object(fromFile: url) { place(object) }
             }
         }
         if objects.isEmpty, pageView.focused() == nil,
@@ -324,9 +405,44 @@ public final class PageController {
             objects = [.text(TextContainer(id: UUID(), frame: Frame(x: origin.x, y: origin.y, width: 360, height: 0),
                                             paragraphs: paragraphs))]
         }
+        commitAdded(objects)
+    }
+
+    /// Files dropped on the page, stacked down from the drop point. One undo removes the whole drop.
+    private func dropFiles(_ urls: [URL], at point: NSPoint) {
+        let origin = (x: Double(point.x), y: Double(point.y))
+        var objects: [PageObject] = []
+        for url in urls {
+            guard var object = object(fromFile: url) else { continue }
+            object.frame.x = origin.x
+            object.frame.y = Page.stackedY(reserved: objects.map(\.frame), y: origin.y)
+            objects.append(object)
+        }
+        commitAdded(objects)
+    }
+
+    /// Adds every object in one undo step and selects the last.
+    private func commitAdded(_ objects: [PageObject]) {
         guard !objects.isEmpty else { return }
         selected = objects.last?.id
         commit { page in for object in objects { page.add(object) } }
+    }
+
+    /// The paste and drop storage path: copy the file into the notebook and make an image or an attachment.
+    /// The frame origin is unset; the caller places it. A file that is not an image, including a document or PDF, is an attachment.
+    private func object(fromFile url: URL) -> PageObject? {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty,
+              let name = storeAsset?(data, url.pathExtension) else { return nil }
+        let isImage = (UTType(filenameExtension: url.pathExtension) ?? .data).conforms(to: .image)
+        if isImage, let image = NSImage(data: data) {
+            let size = fitted(image.size)
+            return .image(ImageObject(id: UUID(), frame: Frame(x: 0, y: 0, width: size.width, height: size.height), asset: name))
+        }
+        let display = url.lastPathComponent.isEmpty ? "Attachment" : url.lastPathComponent
+        return .attachment(AttachmentObject(id: UUID(), frame: Frame(x: 0, y: 0, width: 160, height: 64),
+                                             asset: name, displayName: display))
     }
 
     /// An image lands where the user is looking, below anything it would cover. Anything else stacks from that spot.
@@ -340,9 +456,8 @@ public final class PageController {
             placed.frame.x = spot.x
             placed.frame.y = spot.y
         } else {
-            let y = reserved.map { $0.y + $0.height + 16 }.max() ?? origin.y
             placed.frame.x = origin.x
-            placed.frame.y = y
+            placed.frame.y = Page.stackedY(reserved: reserved, y: origin.y)
         }
         return placed
     }
@@ -373,5 +488,25 @@ public final class PageController {
         guard w > 1, h > 1 else { return NSSize(width: 240, height: 180) }
         let scale = min(1, 480 / max(w, h))
         return NSSize(width: (w * scale).rounded(), height: (h * scale).rounded())
+    }
+}
+
+/// Target for an object's context menu. Actions run after menu tracking returns, so deleting
+/// the clicked view does not free it while AppKit is still inside its right-click.
+private final class ObjectMenuTarget: NSObject {
+    var open: () -> Void = {}
+    var delete: () -> Void = {}
+    var copy: () -> Void = {}
+    var bringToFront: () -> Void = {}
+    var sendToBack: () -> Void = {}
+
+    @objc func openItem(_ sender: Any?) { later(open) }
+    @objc func deleteItem(_ sender: Any?) { later(delete) }
+    @objc func copyItem(_ sender: Any?) { later(copy) }
+    @objc func frontItem(_ sender: Any?) { later(bringToFront) }
+    @objc func backItem(_ sender: Any?) { later(sendToBack) }
+
+    private func later(_ action: @escaping () -> Void) {
+        RunLoop.main.perform(inModes: [.default], block: action)
     }
 }

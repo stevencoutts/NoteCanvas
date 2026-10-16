@@ -6,9 +6,9 @@ import AppKit
 /// (version without a leading v). GitHub asset URLs are ignored, and a failed download is not
 /// retried from GitHub.
 ///
-/// The packaged app's version is `CFBundleShortVersionString` (see `.github/package-app.sh`).
-/// `swift run` has no bundle version and is treated as 0.0.0. It can download an update and
-/// reveal it in Finder; only a running `NoteCanvas.app` is replaced.
+/// The packaged app's version is `CFBundleShortVersionString`. `swift run` has no bundle version.
+/// That is not 0.0.0, and it does not check or download. Only a running `NoteCanvas.app` with a
+/// real version is replaced.
 public enum AppUpdate {
     /// Seconds since 1970 of the last completed check. Not a note, and not read back to skip a launch check.
     static let lastCheckKey = "lastUpdateCheck"
@@ -70,13 +70,17 @@ public enum AppUpdate {
         URL(string: "https://stevec.couttsnet.com/downloads/notecanvas/macos/NoteCanvas-\(version).zip")
     }
 
+    /// 0.0.0 is not a real installed version, so it is not older than 1.0.x.
     public static func isUpdate(_ remote: Version, replacing current: Version) -> Bool {
-        remote > current
+        guard (current.major, current.minor, current.patch) != (0, 0, 0) else { return false }
+        return remote > current
     }
 
-    public static func currentVersion() -> Version {
-        let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        return Version.parse(raw) ?? Version(major: 0, minor: 0, patch: 0)
+    /// `CFBundleShortVersionString` as major.minor.patch, or nil when this process has none.
+    /// `swift run` returns nil. A missing version is not 0.0.0.
+    public static func currentVersion() -> Version? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return nil }
+        return Version.parse(raw)
     }
 
     /// The running bundle when this process is `NoteCanvas.app`. `swift run` returns nil.
@@ -86,13 +90,28 @@ public enum AppUpdate {
         return url
     }
 
+    /// Version of the installed `NoteCanvas.app`, or nil for a development build.
+    /// Development is a process that is not `NoteCanvas.app`, or one whose short version is missing or 0.0.0.
+    public static func installedVersion() -> Version? {
+        guard installedAppURL() != nil, let version = currentVersion() else { return nil }
+        guard (version.major, version.minor, version.patch) != (0, 0, 0) else { return nil }
+        return version
+    }
+
     private static var busy = false
     private static var interactivePending = false
     private static var helper: Process?
 
     /// `interactive` shows an alert when there is nothing to install. A silent launch check only speaks when a newer version exists.
+    /// A development build does not check. Choosing Check for Updates… there shows one short alert and does not download.
     public static func check(interactive: Bool) {
         onMain {
+            guard installedVersion() != nil else {
+                if interactive {
+                    tell("This is a development build", "Updates are for the installed NoteCanvas app.")
+                }
+                return
+            }
             if busy {
                 if interactive { interactivePending = true }
                 return
@@ -120,25 +139,23 @@ public enum AppUpdate {
     private static func finish(_ outcome: Outcome, interactive: Bool) {
         switch outcome {
         case .update(let release):
-            let installed = installedAppURL()
-            let agreed = installed == nil
-                ? ask("NoteCanvas \(release.version) is available",
-                      "Replacing the running copy only works for the installed app. The new app can be downloaded and shown in Finder.",
-                      ok: "Download")
-                : ask("Update NoteCanvas to \(release.version)?",
-                      "The new app will replace this copy. NoteCanvas will quit and open again.",
-                      ok: "Install and Relaunch")
+            guard let installed = installedAppURL() else {
+                busy = false
+                if interactive {
+                    tell("This is a development build", "Updates are for the installed NoteCanvas app.")
+                }
+                return
+            }
+            let agreed = ask("Update NoteCanvas to \(release.version)?",
+                             "The new app will replace this copy. NoteCanvas will quit and open again.",
+                             ok: "Install and Relaunch")
             guard agreed else { busy = false; return }
             DispatchQueue.global(qos: .utility).async {
                 do {
                     let app = try downloadApp(from: release.zipURL)
                     onMain {
                         busy = false
-                        if let installed {
-                            replaceRunningApp(with: app, at: installed)
-                        } else {
-                            NSWorkspace.shared.activateFileViewerSelecting([app])
-                        }
+                        replaceRunningApp(with: app, at: installed)
                     }
                 } catch let error as UpdateError {
                     onMain {
@@ -154,23 +171,17 @@ public enum AppUpdate {
             }
         case .current(let version):
             busy = false
-            if interactive { tell("NoteCanvas is up to date", upToDateMessage(version)) }
+            if interactive { tell("NoteCanvas is up to date", "You are running \(version).") }
         case .failed(let message):
             busy = false
             if interactive { tell("Could not check for updates", message) }
         }
     }
 
-    private static func upToDateMessage(_ version: Version) -> String {
-        let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        if Version.parse(raw) == nil {
-            return "This copy has no version number, so it is treated as 0.0.0."
-        }
-        return "You are running \(version)."
-    }
-
     private static func fetchLatest() -> Outcome {
-        let current = currentVersion()
+        guard let current = installedVersion() else {
+            return .failed("This is a development build.")
+        }
         do {
             var request = URLRequest(url: latestURL, timeoutInterval: 20)
             request.setValue("NoteCanvas", forHTTPHeaderField: "User-Agent")

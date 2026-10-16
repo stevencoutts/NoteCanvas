@@ -5,6 +5,8 @@ final class PageView: NSView {
     var configure: ((ContainerView) -> Void)?
     var configureObject: ((ObjectView) -> Void)?
     var onBackgroundClick: ((NSPoint) -> Void)?
+    /// File URLs dropped on the paper, in page coordinates. Text boxes forward here too, so a drop never types into a box.
+    var onDropFiles: (([URL], NSPoint) -> Void)?
     var assets: (String) -> Data? = { _ in nil }
     private var views: [UUID: ContainerView] = [:]
     private var objectViews: [UUID: ObjectView] = [:]
@@ -17,6 +19,7 @@ final class PageView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         appearance = NSAppearance(named: .aqua)     // the page is always light; text defaults to black
+        registerForDraggedTypes([.fileURL])         // empty paper accepts a Finder drop, not only the objects on it
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -41,6 +44,17 @@ final class PageView: NSView {
         dirtyRect.fill()
     }
     override func mouseDown(with event: NSEvent) { onBackgroundClick?(convert(event.locationInWindow, from: nil)) }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        FileDrag.isFile(sender) ? .copy : []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = FileDrag.urls(sender)
+        guard !urls.isEmpty else { return false }
+        onDropFiles?(urls, convert(sender.draggingLocation, from: nil))
+        return true
+    }
 
     private func makeContent(for object: PageObject) -> ObjectContentView {
         switch object {
@@ -118,5 +132,19 @@ final class PageView: NSView {
         guard let v = views[id] else { return }
         window?.makeFirstResponder(v.textView)
         v.needsDisplay = true
+    }
+}
+
+/// File URLs only. A string, picture, or web link on the pasteboard is not a drop this page accepts.
+enum FileDrag {
+    private static let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+
+    static func isFile(_ sender: NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: options)
+    }
+
+    static func urls(_ sender: NSDraggingInfo) -> [URL] {
+        guard isFile(sender) else { return [] }
+        return sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
     }
 }

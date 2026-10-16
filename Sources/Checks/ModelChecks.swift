@@ -152,6 +152,11 @@ func objectChecks() {
                           bordersVisible: true)
     let att = AttachmentObject(id: UUID(), frame: Frame(x: 9, y: 9, width: 60, height: 60), asset: "b.pdf", displayName: "Doc.pdf")
     let txt = box(0, 0, 100)
+    let objectMenu: [ObjectMenuItem] = [.open, .delete, .copy, .bringToFront, .sendToBack]
+    checkEqual(PageObject.text(txt).contextMenuItems, objectMenu, "a text box menu opens, deletes, copies and reorders")
+    checkEqual(PageObject.image(img).contextMenuItems, objectMenu, "an image menu opens, deletes, copies and reorders")
+    checkEqual(PageObject.attachment(att).contextMenuItems, objectMenu, "an attachment menu opens, deletes, copies and reorders")
+    checkEqual(PageObject.table(tbl).contextMenuItems, [.delete, .copy, .bringToFront, .sendToBack], "a table menu has no open action")
     var page = Page(id: UUID(), title: "t", objects: [.image(img), .table(tbl), .attachment(att), .text(txt)])
 
     let back = try! JSONDecoder().decode(Page.self, from: JSONEncoder().encode(page))
@@ -201,6 +206,12 @@ func objectChecks() {
     crowded.add(.text(TextContainer(id: UUID(), frame: Frame(x: 40, y: 156, width: 80, height: 40), paragraphs: [])))
     let lower = crowded.clearOrigin(width: 80, height: 60, nearX: 48, nearY: 48)
     checkEqual(lower.y, 212, "it steps past every box it would cover")
+    checkEqual(Page.stackedY(reserved: [], y: 80), 80, "the first file in a drop keeps the drop's vertical place")
+    checkEqual(Page.stackedY(reserved: [Frame(x: 10, y: 80, width: 160, height: 64)], y: 80), 160,
+               "the next file sits 16 points below the one above")
+    checkEqual(Page.stackedY(reserved: [Frame(x: 10, y: 80, width: 160, height: 64),
+                                        Frame(x: 10, y: 160, width: 480, height: 240)], y: 80), 416,
+               "a stack of dropped files steps past the lowest one")
 
     // Table height and width are derived: FixedLineMeasurer gives 20 per paragraph, padding is 4 each side.
     checkEqual(tbl.rowHeights(using: FixedLineMeasurer()), [28, 28], "row height = max(minimum, tallest cell + padding)")

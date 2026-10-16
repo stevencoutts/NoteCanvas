@@ -16,6 +16,10 @@ func updateChecks() {
     check(AppUpdate.isUpdate(newer, replacing: older), "1.10.0 is newer than 1.9.0")
     check(!AppUpdate.isUpdate(v123, replacing: v123), "same version is not an update")
     check(!AppUpdate.isUpdate(older, replacing: newer), "older version is not an update")
+    let zero = AppUpdate.Version(major: 0, minor: 0, patch: 0)
+    checkEqual(AppUpdate.Version.parse("0.0.0"), Optional(zero), "0.0.0 parses")
+    check(!AppUpdate.isUpdate(AppUpdate.Version(major: 1, minor: 0, patch: 1), replacing: zero), "0.0.0 is not older than 1.0.x")
+    check(!AppUpdate.isUpdate(newer, replacing: zero), "0.0.0 is not an update target")
 
     let body = Data("""
     {"tag_name":"v1.4.0","name":"NoteCanvas v1.4.0","body":"release notes are not shown",
@@ -67,6 +71,7 @@ func updateChecks() {
     check(AppUpdate.release(from: Data(#"{}"#.utf8)) == nil, "missing tag is not a release")
     check(AppUpdate.release(from: Data()) == nil, "empty body is not a release")
 
-    checkEqual(AppUpdate.currentVersion(), AppUpdate.Version(major: 0, minor: 0, patch: 0), "missing bundle version is 0.0.0")
+    check(AppUpdate.currentVersion() == nil, "missing bundle version is not a version")
+    check(AppUpdate.installedVersion() == nil, "swift run is not an installed release")
     check(AppUpdate.installedAppURL() == nil, "swift run is not NoteCanvas.app")
 }

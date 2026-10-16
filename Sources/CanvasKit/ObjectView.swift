@@ -2,7 +2,8 @@ import AppKit
 import PageModel
 import UniformTypeIdentifiers
 
-/// The content of an image, table or attachment: drawn read-only, and never takes the mouse itself.
+/// The content of an image, table or attachment: drawn read-only, and never takes the mouse itself,
+/// so a click or right-click lands on the object view, including on this content.
 class ObjectContentView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -112,6 +113,7 @@ final class ObjectView: NSView {
     var onMove: ((Double, Double) -> Void)?
     var onResize: ((ImageCorner, Double, Double) -> Void)?
     var onDragEnd: (() -> Void)?
+    var onRequestMenu: (() -> NSMenu?)?
     var isSelectedObject = false { didSet { updateChrome() } }
     /// Images grow and shrink from their corners. Tables and attachments do not.
     var cornersEnabled = false { didSet { updateChrome() } }
@@ -174,5 +176,15 @@ final class ObjectView: NSView {
     }
 
     /// A click on the content selects the object, exactly like grabbing the strip without moving.
-    override func mouseDown(with event: NSEvent) { onDragBegin?(); onDragEnd?() }
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
+        onDragBegin?(); onDragEnd?()
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? { onRequestMenu?() }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menu(for: event) else { super.rightMouseDown(with: event); return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
 }
